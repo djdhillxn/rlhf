@@ -1,4 +1,5 @@
 import copy
+import re
 from pathlib import Path
 from typing import Any
 
@@ -50,16 +51,73 @@ def load_config(path: str | Path) -> DotDict:
     return DotDict(cfg)
 
 
+def _override_parts(path: str) -> list[str]:
+    """Parse dotted paths and list indices such as policies[1].checkpoint_dir."""
+    normalized = re.sub(r"\[(\d+)\]", r".\1", str(path).strip())
+    parts = normalized.split(".")
+    if not normalized or any(not part for part in parts):
+        raise ConfigError(f"invalid override path: {path!r}")
+    return parts
+
+
+def _list_index(part: str, path: str) -> int:
+    if not part.isdigit():
+        raise ConfigError(f"override path {path!r} must use an integer list index, got {part!r}")
+    return int(part)
+
+
 def apply_overrides(cfg: DotDict, overrides: dict[str, Any]) -> DotDict:
     updated = copy.deepcopy(dict(cfg))
     for key, value in overrides.items():
-        cursor = updated
-        parts = key.split(".")
-        for part in parts[:-1]:
-            if part not in cursor or not isinstance(cursor[part], dict):
-                cursor[part] = {}
-            cursor = cursor[part]
-        cursor[parts[-1]] = value
+        parts = _override_parts(key)
+        cursor: Any = updated
+        for position, part in enumerate(parts[:-1]):
+            next_part = parts[position + 1]
+            if isinstance(cursor, list):
+                index = _list_index(part, key)
+                if index >= len(cursor):
+                    raise ConfigError(
+                        f"override path {key!r} selects list index {index}, "
+                        f"but the list has length {len(cursor)}"
+                    )
+                child = cursor[index]
+                if not isinstance(child, (dict, list)):
+                    raise ConfigError(
+                        f"override path {key!r} cannot descend through "
+                        f"{type(child).__name__} at index {index}"
+                    )
+                cursor = child
+                continue
+
+            if not isinstance(cursor, dict):
+                raise ConfigError(
+                    f"override path {key!r} cannot descend through {type(cursor).__name__}"
+                )
+            if part not in cursor:
+                cursor[part] = [] if next_part.isdigit() else {}
+            child = cursor[part]
+            if not isinstance(child, (dict, list)):
+                raise ConfigError(
+                    f"override path {key!r} cannot descend through "
+                    f"{type(child).__name__} at {part!r}"
+                )
+            cursor = child
+
+        final = parts[-1]
+        if isinstance(cursor, list):
+            index = _list_index(final, key)
+            if index >= len(cursor):
+                raise ConfigError(
+                    f"override path {key!r} selects list index {index}, "
+                    f"but the list has length {len(cursor)}"
+                )
+            cursor[index] = value
+        elif isinstance(cursor, dict):
+            cursor[final] = value
+        else:
+            raise ConfigError(
+                f"override path {key!r} cannot assign through {type(cursor).__name__}"
+            )
     return DotDict(updated)
 
 

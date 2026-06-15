@@ -112,6 +112,12 @@ consistent across Base, SFT, and PPO. Neutral decoding controls are passed
 explicitly so checkpoint-specific generation defaults cannot make the
 comparison asymmetric.
 
+Evaluation overrides may address policy lists with either
+`policies.1.checkpoint_dir=...` or
+`policies[1].checkpoint_dir=...`. The policy labeled `base` should retain a
+null checkpoint so it loads `model.name`; pointing it at the SFT checkpoint
+would make the Base and SFT columns identical.
+
 ## Colab and checkpoints
 
 Use local Colab storage for active training and copy checkpoints to Drive with

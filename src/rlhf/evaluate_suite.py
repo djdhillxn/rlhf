@@ -75,6 +75,15 @@ def _none_if_empty(value: Any) -> str | None:
     return str(value)
 
 
+def _looks_like_local_path(value: str) -> bool:
+    expanded = Path(value).expanduser()
+    return (
+        expanded.is_absolute()
+        or value.startswith(("./", "../", "~"))
+        or len(expanded.parts) > 2
+    )
+
+
 def _looks_like_policy_checkpoint(path: Path) -> bool:
     """Return True only for actual saved policy checkpoints.
 
@@ -150,11 +159,15 @@ def _resolve_checkpoint_dir(spec: dict[str, Any]) -> str | None:
     if checkpoint_format in {"hf", "huggingface", "trl", "peft"}:
         if checkpoint_dir is None:
             return None
-        path = Path(checkpoint_dir)
-        if path.exists() or not checkpoint_dir.startswith((".", "/")):
+        path = Path(checkpoint_dir).expanduser()
+        if path.exists():
+            return str(path)
+        if not _looks_like_local_path(checkpoint_dir):
             return checkpoint_dir
         raise FileNotFoundError(
-            f"Could not resolve Hugging Face checkpoint for label={spec.get('label')!r}: {checkpoint_dir}"
+            f"Local Hugging Face checkpoint does not exist for "
+            f"label={spec.get('label')!r}: {checkpoint_dir}. "
+            "Check the resolved --set policies[index].checkpoint_dir override."
         )
     if checkpoint_dir:
         path = Path(checkpoint_dir)
@@ -207,6 +220,12 @@ def _policy_specs(cfg) -> list[dict[str, Any]]:
         spec["label"] = label
         spec["checkpoint_dir"] = _resolve_checkpoint_dir(spec)
         out.append(spec)
+    print("Resolved evaluation policies:")
+    for spec in out:
+        source = spec.get("checkpoint_dir") or str(
+            cfg.model.get("name", "Qwen/Qwen2.5-0.5B-Instruct")
+        )
+        print(f"  {spec['label']}: {source}")
     return out
 
 
@@ -258,12 +277,16 @@ def _load_policy(cfg, spec: dict[str, Any], device: torch.device, tokenizer: Any
     load_in_4bit = bool(spec.get("load_in_4bit", cfg.model.get("policy_load_in_4bit", cfg.model.get("load_in_4bit", False))))
     load_in_8bit = bool(spec.get("load_in_8bit", cfg.model.get("policy_load_in_8bit", False)))
     trust_remote_code = bool(cfg.model.get("trust_remote_code", False))
+    local_files_only = bool(cfg.model.get("local_files_only", False))
 
     if checkpoint_format in {"hf", "huggingface", "trl", "peft"}:
         from transformers import AutoModelForCausalLM
 
         model_path = checkpoint_dir or spec.get("model_path") or model_name
-        kwargs: dict[str, Any] = {"trust_remote_code": trust_remote_code}
+        kwargs: dict[str, Any] = {
+            "trust_remote_code": trust_remote_code,
+            "local_files_only": local_files_only,
+        }
         dtype = resolve_dtype(torch_dtype)
         if dtype != "auto":
             kwargs["dtype"] = dtype
@@ -330,6 +353,7 @@ def _load_reward_model(cfg, device: torch.device) -> nn.Module:
         kwargs: dict[str, Any] = {
             "num_labels": 1,
             "trust_remote_code": bool(cfg.model.get("trust_remote_code", False)),
+            "local_files_only": bool(cfg.model.get("local_files_only", False)),
         }
         dtype = resolve_dtype(str(cfg.reward_model.get("torch_dtype", cfg.model.get("torch_dtype", "auto"))))
         if dtype != "auto":
@@ -899,6 +923,7 @@ def run_policy_suite_eval(
     tokenizer = AutoTokenizer.from_pretrained(
         tokenizer_path,
         trust_remote_code=bool(cfg.model.get("trust_remote_code", False)),
+        local_files_only=bool(cfg.model.get("local_files_only", False)),
     )
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
