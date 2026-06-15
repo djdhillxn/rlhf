@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rlhf-research"
+version = "0.1.0"
+description = "Reproducible SFT, reward modeling, PPO, and evaluation for language-model alignment"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "torch>=2.2",
+  "numpy>=1.26",
+  "PyYAML>=6.0",
+  "matplotlib>=3.8",
+  "pandas>=2.0",
+  "tqdm>=4.66",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["rlhf*"]
