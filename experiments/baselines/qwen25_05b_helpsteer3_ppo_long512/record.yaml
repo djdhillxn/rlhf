@@ -1,0 +1,75 @@
+schema_version: 1
+experiment_id: qwen25-05b-helpsteer3-ppo-long512-baseline
+status: completed
+role: frozen historical baseline
+
+lineage:
+  base_model: Qwen/Qwen2.5-0.5B-Instruct
+  dataset: NVIDIA HelpSteer3
+  sft_output: outputs/rlhf/qwen25_05b_helpsteer3_sft_4096
+  reward_output: outputs/rlhf/qwen25_05b_helpsteer3_reward_4096_epoch2
+  ppo_output: outputs/rlhf/qwen25_05b_helpsteer3_ppo_4096_epoch2_long512
+  eval512_output: outputs/rlhf/qwen25_05b_helpsteer3_eval_suite_4096_ep2_u400
+  eval1024_output: outputs/rlhf/qwen25_05b_helpsteer3_eval_suite_4096_ep2_u400_eval1024
+
+resolved_configs:
+  sft: sft_config_resolved.yaml
+  reward_model: reward_config_resolved.yaml
+  ppo: ppo_config_resolved.yaml
+  evaluation_1024: eval1024_config_resolved.yaml
+
+training:
+  sft:
+    max_total_tokens: 4096
+    epochs: 2
+    optimizer_steps: 4030
+    lora_rank: 16
+  reward_model:
+    max_total_tokens: 4096
+    epochs: 2
+    validation_pairs: 1917
+    validation_accuracy: 0.7162232655190401
+    validation_loss: 0.9734213117142798
+    average_margin: 0.9094236201772357
+  ppo:
+    max_prompt_tokens: 3072
+    max_response_tokens: 512
+    requested_updates: 400
+    completed_updates: 397
+    lora_rank: 16
+    learning_rate: 3.0e-7
+    clip_range: 0.06
+    value_clip_range: 0.2
+    initial_kl_coefficient: 0.18
+    final_kl_coefficient: 0.14
+    advantage_normalization: true
+    reward_whitening: false
+    reward_clip: [-5.0, 5.0]
+    length_penalty_coefficient: 0.002
+    missing_eos_penalty: 0.0
+    minimum_new_tokens: 32
+    short_response_penalty: 0.5
+    group_reward_normalization: false
+    repetition_penalty: 1.05
+    no_repeat_ngram_size: 4
+
+evaluation_1024:
+  validation_prompts: 2017
+  max_prompt_tokens: 3072
+  max_response_tokens: 1024
+  base_vs_ppo:
+    ppo_win_rate: 0.3891918691125434
+    ppo_minus_base_mean_reward: -0.21369654293290727
+  sft_vs_ppo:
+    ppo_win_rate: 0.4422409519087754
+    ppo_minus_sft_mean_reward: 0.03429952418005919
+  cap_hit_rate:
+    base: 0.08081308874566187
+    sft: 0.10163609320773426
+    ppo: 0.11601388200297472
+
+conclusion: >
+  The pipeline and conservative PPO optimization were operational and avoided
+  empty-response collapse, but the PPO policy did not outperform the base model
+  overall. This run is the comparison baseline for future implementation and
+  hyperparameter changes.

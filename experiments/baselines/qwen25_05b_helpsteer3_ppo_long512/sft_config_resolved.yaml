@@ -1,0 +1,44 @@
+model:
+  name: Qwen/Qwen2.5-0.5B-Instruct
+  torch_dtype: bfloat16
+  trust_remote_code: false
+  device_map: null
+  load_in_4bit: false
+  load_in_8bit: false
+  gradient_checkpointing: true
+lora:
+  enabled: true
+  r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  bias: none
+  task_type: CAUSAL_LM
+  target_modules:
+  - q_proj
+  - k_proj
+  - v_proj
+  - o_proj
+  - gate_proj
+  - up_proj
+  - down_proj
+data:
+  train_split: train
+  max_length: 4096
+  max_train_samples: null
+train:
+  output_dir: outputs/rlhf/qwen25_05b_helpsteer3_sft_4096
+  seed: 839
+  device: cuda
+  epochs: 2
+  batch_size: 6
+  gradient_accumulation_steps: 3
+  learning_rate: 5.0e-06
+  weight_decay: 0.0
+  max_grad_norm: 1.0
+  warmup_steps: 100
+  log_every: 10
+  artifact_every: 50
+  save_every_steps: 0
+  num_workers: 2
+  pin_memory: true
+  persistent_workers: true
