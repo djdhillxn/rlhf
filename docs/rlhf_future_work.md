@@ -1,5 +1,11 @@
 # RLHF Future Work
 
+> **Implementation status:** the first systems item from this research program
+> is now implemented as a TRL 1.6.0 migration. The migration improves the
+> training foundation but has not yet produced a new empirical result. The
+> controlled evaluations and model-quality questions below therefore remain
+> future work.
+
 The current system establishes that the complete training and evaluation path works: long-context supervised fine-tuning, pairwise reward modeling, KL-controlled token-level PPO, resumable policy-suite generation, and qualitative auditing all run on real HelpSteer3 data. The negative and mixed results are therefore useful design evidence. They identify the parts of the alignment stack that now limit performance and suggest a sequence of experiments that is more informative than simply increasing the number of PPO updates.
 
 ## Establish a controlled evaluation protocol

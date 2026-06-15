@@ -8,8 +8,10 @@ from statistics import mean, median
 from typing import Any
 
 
-POLICIES = ("base", "sft_4096", "ppo_4096_ep2_u400")
+BASE = "base"
+SFT = "sft_4096"
 PPO = "ppo_4096_ep2_u400"
+POLICIES = (BASE, SFT, PPO)
 SENSITIVE_TERMS = (
     "asshole",
     "bitch",
@@ -167,6 +169,8 @@ def _comparison_rows(current: list[dict[str, Any]], baseline: list[dict[str, Any
 
 
 def _candidate_fields() -> list[str]:
+    ppo_base_delta = f"delta_{PPO}_minus_{BASE}"
+    ppo_sft_delta = f"delta_{PPO}_minus_{SFT}"
     fields = [
         "idx",
         "domain",
@@ -174,9 +178,9 @@ def _candidate_fields() -> list[str]:
         "winner",
         "reward_rank",
         "user_prompt",
-        "delta_sft_4096_minus_base",
-        "delta_ppo_4096_ep2_u400_minus_base",
-        "delta_ppo_4096_ep2_u400_minus_sft_4096",
+        f"delta_{SFT}_minus_{BASE}",
+        ppo_base_delta,
+        ppo_sft_delta,
     ]
     for policy in POLICIES:
         fields.extend(
@@ -219,8 +223,10 @@ def _write_report(
     reward_mismatches: list[dict[str, Any]],
 ) -> None:
     policy_stats = {policy: _policy_stats(rows, policy) for policy in POLICIES}
-    ppo_base = _delta_stats(rows, "delta_ppo_4096_ep2_u400_minus_base")
-    ppo_sft = _delta_stats(rows, "delta_ppo_4096_ep2_u400_minus_sft_4096")
+    ppo_base_delta = f"delta_{PPO}_minus_{BASE}"
+    ppo_sft_delta = f"delta_{PPO}_minus_{SFT}"
+    ppo_base = _delta_stats(rows, ppo_base_delta)
+    ppo_sft = _delta_stats(rows, ppo_sft_delta)
 
     lines = [
         "# Automated qualitative audit",
@@ -279,11 +285,11 @@ def _write_report(
         ("idx", "idx"),
         ("domain", "domain"),
         ("language", "language"),
-        ("delta_ppo_4096_ep2_u400_minus_base", "PPO-Base"),
-        ("delta_ppo_4096_ep2_u400_minus_sft_4096", "PPO-SFT"),
-        ("ppo_4096_ep2_u400_reward", "PPO reward"),
-        ("ppo_4096_ep2_u400_response_tokens", "tokens"),
-        ("ppo_4096_ep2_u400_repeated_4gram_fraction", "repeat-4"),
+        (ppo_base_delta, "PPO-Base"),
+        (ppo_sft_delta, "PPO-SFT"),
+        (f"{PPO}_reward", "PPO reward"),
+        (f"{PPO}_response_tokens", "tokens"),
+        (f"{PPO}_repeated_4gram_fraction", "repeat-4"),
     ]
     sections = [
         ("Qualified PPO candidates", qualified),
@@ -350,32 +356,42 @@ def _write_selected_examples(
 
 
 def main() -> None:
+    global BASE, SFT, PPO, POLICIES
+
     parser = argparse.ArgumentParser(description="Audit policy-suite outputs and export qualitative curation candidates.")
     parser.add_argument("--eval-dir", required=True, type=Path)
     parser.add_argument("--baseline-dir", type=Path)
     parser.add_argument("--selection-file", type=Path)
+    parser.add_argument("--base-label", default=BASE)
+    parser.add_argument("--sft-label", default=SFT)
+    parser.add_argument("--ppo-label", default=PPO)
     args = parser.parse_args()
+
+    BASE, SFT, PPO = args.base_label, args.sft_label, args.ppo_label
+    POLICIES = (BASE, SFT, PPO)
 
     samples_path = args.eval_dir / "policy_suite_samples.jsonl"
     rows = _load_jsonl(samples_path)
     _enrich(rows)
+    ppo_base_delta = f"delta_{PPO}_minus_{BASE}"
+    ppo_sft_delta = f"delta_{PPO}_minus_{SFT}"
 
     qualified = sorted(
         [
             row
             for row in rows
             if row.get("winner") == PPO
-            and float(row["delta_ppo_4096_ep2_u400_minus_base"]) > 2.0
-            and float(row["delta_ppo_4096_ep2_u400_minus_sft_4096"]) > 1.0
+            and float(row[ppo_base_delta]) > 2.0
+            and float(row[ppo_sft_delta]) > 1.0
             and not bool(row[f"{PPO}_cap_hit"])
             and float(row[f"{PPO}_repeated_4gram_fraction"]) < 0.15
         ],
-        key=lambda row: float(row["delta_ppo_4096_ep2_u400_minus_base"]),
+        key=lambda row: float(row[ppo_base_delta]),
         reverse=True,
     )
     losses = sorted(
-        [row for row in rows if float(row["delta_ppo_4096_ep2_u400_minus_base"]) < -5.0],
-        key=lambda row: float(row["delta_ppo_4096_ep2_u400_minus_base"]),
+        [row for row in rows if float(row[ppo_base_delta]) < -5.0],
+        key=lambda row: float(row[ppo_base_delta]),
     )
     repetition_risks = sorted(
         [row for row in rows if float(row[f"{PPO}_repeated_4gram_fraction"]) > 0.25],

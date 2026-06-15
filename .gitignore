@@ -1,7 +1,13 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+*.egg-info/
+.venv/
 .DS_Store
+
+# Local paper library and downloaded archives are intentionally private.
+research/
+outputs.zip
 
 # Keep run metrics/configs/metadata under outputs/ commit-friendly, but do not
 # publish heavy model checkpoint files.

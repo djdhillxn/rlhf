@@ -226,3 +226,21 @@ Associated artifacts:
 The experiments produced an end-to-end RLHF pipeline for Qwen2.5-0.5B-Instruct using HelpSteer3. The final long-context reward model reached 71.62% pairwise validation accuracy, PPO training remained stable, and the evaluation system completed and audited all 2017 validation prompts. PPO changed behavior and produced useful local improvements, but it did not globally outperform the base instruction model.
 
 The 1024-token suite is a more revealing endpoint than the shorter evaluation. It reduces accidental truncation while exposing weaknesses in stopping, factuality, and reward-model judgment. The main result is therefore the complete implementation and the evidence it produces about both successful alignment behavior and failure modes. Manually reviewed examples are in [`rlhf_qualitative_audit.md`](rlhf_qualitative_audit.md), and the resulting research program is in [`rlhf_future_work.md`](rlhf_future_work.md).
+
+## Phase 8: TRL migration
+
+The next experimental line migrates SFT, reward modeling, and PPO to Hugging
+Face TRL 1.6.0 while preserving the HelpSteer3 data contract, run manifests,
+evaluation suite, and qualitative audit. This is an implementation change, not
+a claimed model improvement. No TRL result should be compared with the frozen
+baseline until the smoke run passes and the pilot completes under a recorded
+software environment.
+
+The migration adds response-safe pretokenization, a distinct padding token,
+zero dropout for PPO, behavior log-probabilities matched to the sampling
+temperature, EOS stopping and penalties, an SFT-initialized reward model with
+controlled scalar-head initialization, post-training reward centering, and a
+critic initialized from the reward model. The active protocol is documented in
+[`trl_migration.md`](trl_migration.md). The previous implementation remains
+reproducible at commit
+`6cbf214fcf1b91c7b756e303e533c2c86d2eba89`.

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+from torch import nn
 from tqdm.auto import tqdm
 
 from .config import load_config, save_config
@@ -19,6 +20,21 @@ from .lm_policy import TokenPolicyWithValue
 from .metrics import write_csv, write_json
 from .reward_model import RewardModel
 from .rollout import GenerationConfig
+from .trl_common import resolve_dtype
+from .trl_models import load_reward_center
+
+
+class HFSequenceRewardAdapter(nn.Module):
+    """Expose a Transformers sequence classifier through the legacy scalar API."""
+
+    def __init__(self, model: nn.Module, offset: float = 0.0) -> None:
+        super().__init__()
+        self.model = model
+        self.offset = float(offset)
+
+    def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+        output = self.model(input_ids=input_ids, attention_mask=attention_mask, use_cache=False)
+        return output.logits.squeeze(-1) - self.offset
 
 
 def _device_from_cfg(cfg: dict[str, Any]) -> torch.device:
@@ -127,7 +143,19 @@ def _resolve_checkpoint_dir(spec: dict[str, Any]) -> str | None:
     an adapter/model and value head; otherwise evaluation fails loudly instead of
     silently falling back to the base model.
     """
-    checkpoint_dir = _none_if_empty(spec.get("checkpoint_dir", spec.get("policy_checkpoint_dir")))
+    checkpoint_format = str(spec.get("format", "legacy")).lower()
+    checkpoint_dir = _none_if_empty(
+        spec.get("model_path", spec.get("checkpoint_dir", spec.get("policy_checkpoint_dir")))
+    )
+    if checkpoint_format in {"hf", "huggingface", "trl", "peft"}:
+        if checkpoint_dir is None:
+            return None
+        path = Path(checkpoint_dir)
+        if path.exists() or not checkpoint_dir.startswith((".", "/")):
+            return checkpoint_dir
+        raise FileNotFoundError(
+            f"Could not resolve Hugging Face checkpoint for label={spec.get('label')!r}: {checkpoint_dir}"
+        )
     if checkpoint_dir:
         path = Path(checkpoint_dir)
         for candidate in _checkpoint_candidates_from_path(path):
@@ -221,14 +249,47 @@ def _build_full_attention(prompt_attention: torch.Tensor, generated: torch.Tenso
     return full_attention
 
 
-def _load_policy(cfg, spec: dict[str, Any], device: torch.device) -> TokenPolicyWithValue:
+def _load_policy(cfg, spec: dict[str, Any], device: torch.device, tokenizer: Any | None = None) -> nn.Module:
     model_name = str(cfg.model.get("name", "Qwen/Qwen2.5-0.5B-Instruct"))
     checkpoint_dir = spec.get("checkpoint_dir")
+    checkpoint_format = str(spec.get("format", "legacy")).lower()
     torch_dtype = str(spec.get("torch_dtype", cfg.model.get("torch_dtype", "auto")))
     device_map = spec.get("device_map", cfg.model.get("policy_device_map"))
     load_in_4bit = bool(spec.get("load_in_4bit", cfg.model.get("policy_load_in_4bit", cfg.model.get("load_in_4bit", False))))
     load_in_8bit = bool(spec.get("load_in_8bit", cfg.model.get("policy_load_in_8bit", False)))
     trust_remote_code = bool(cfg.model.get("trust_remote_code", False))
+
+    if checkpoint_format in {"hf", "huggingface", "trl", "peft"}:
+        from transformers import AutoModelForCausalLM
+
+        model_path = checkpoint_dir or spec.get("model_path") or model_name
+        kwargs: dict[str, Any] = {"trust_remote_code": trust_remote_code}
+        dtype = resolve_dtype(torch_dtype)
+        if dtype != "auto":
+            kwargs["dtype"] = dtype
+        if spec.get("attn_implementation"):
+            kwargs["attn_implementation"] = spec["attn_implementation"]
+        adapter_path = _none_if_empty(spec.get("adapter_path"))
+        if adapter_path:
+            base_path = str(spec.get("base_model_path", model_path))
+            policy = AutoModelForCausalLM.from_pretrained(base_path, **kwargs)
+            from peft import PeftModel
+
+            policy = PeftModel.from_pretrained(policy, adapter_path, is_trainable=False)
+        else:
+            policy = AutoModelForCausalLM.from_pretrained(str(model_path), **kwargs)
+        if tokenizer is not None:
+            from .trl_common import resize_embeddings_if_needed
+
+            resize_embeddings_if_needed(policy, tokenizer)
+            policy.config.pad_token_id = tokenizer.pad_token_id
+            policy.config.eos_token_id = tokenizer.eos_token_id
+        if device_map is None:
+            policy.to(device)
+        policy.eval()
+        for parameter in policy.parameters():
+            parameter.requires_grad_(False)
+        return policy
 
     if checkpoint_dir:
         policy = TokenPolicyWithValue.load_rlhf_pretrained(
@@ -259,8 +320,31 @@ def _load_policy(cfg, spec: dict[str, Any], device: torch.device) -> TokenPolicy
     return policy
 
 
-def _load_reward_model(cfg, device: torch.device) -> RewardModel:
+def _load_reward_model(cfg, device: torch.device) -> nn.Module:
     model_name = str(cfg.model.get("name", "Qwen/Qwen2.5-0.5B-Instruct"))
+    checkpoint_format = str(cfg.reward_model.get("format", "legacy")).lower()
+    if checkpoint_format in {"hf", "huggingface", "trl"}:
+        from transformers import AutoModelForSequenceClassification
+
+        checkpoint_dir = str(cfg.reward_model.get("checkpoint_dir"))
+        kwargs: dict[str, Any] = {
+            "num_labels": 1,
+            "trust_remote_code": bool(cfg.model.get("trust_remote_code", False)),
+        }
+        dtype = resolve_dtype(str(cfg.reward_model.get("torch_dtype", cfg.model.get("torch_dtype", "auto"))))
+        if dtype != "auto":
+            kwargs["dtype"] = dtype
+        model = AutoModelForSequenceClassification.from_pretrained(checkpoint_dir, **kwargs)
+        model.config.pad_token_id = cfg.reward_model.get("pad_token_id", model.config.pad_token_id)
+        if cfg.reward_model.get("device_map") is None:
+            model.to(device)
+        offset = load_reward_center(cfg.reward_model.get("reward_center_path"))
+        reward_model = HFSequenceRewardAdapter(model, offset=offset)
+        reward_model.eval()
+        for parameter in reward_model.parameters():
+            parameter.requires_grad_(False)
+        return reward_model
+
     reward_model = RewardModel.load_rlhf_pretrained(
         str(cfg.reward_model.get("checkpoint_dir")),
         base_model_name=model_name,
@@ -287,16 +371,18 @@ def _gen_kwargs_from_config(generation: GenerationConfig, tokenizer: Any, input_
         do_sample=bool(generation.do_sample),
         pad_token_id=pad_id,
         eos_token_id=tokenizer.eos_token_id,
+        repetition_penalty=float(generation.repetition_penalty),
+        no_repeat_ngram_size=int(generation.no_repeat_ngram_size),
     )
     if int(getattr(generation, "min_new_tokens", 0)) > 0:
         gen_kwargs["min_new_tokens"] = int(generation.min_new_tokens)
     if bool(generation.do_sample):
         gen_kwargs["temperature"] = float(generation.temperature)
         gen_kwargs["top_p"] = float(generation.top_p)
-    if float(generation.repetition_penalty) != 1.0:
-        gen_kwargs["repetition_penalty"] = float(generation.repetition_penalty)
-    if int(generation.no_repeat_ngram_size) > 0:
-        gen_kwargs["no_repeat_ngram_size"] = int(generation.no_repeat_ngram_size)
+        gen_kwargs["top_k"] = 0
+        gen_kwargs["typical_p"] = 1.0
+        gen_kwargs["epsilon_cutoff"] = 0.0
+        gen_kwargs["eta_cutoff"] = 0.0
     return gen_kwargs
 
 
@@ -782,8 +868,18 @@ def _finalize_policy_suite_outputs(
     _write_plots(rows, labels, output_dir / "plots")
 
 
-def run_policy_suite_eval(config_path: str | Path, *, output_dir: str | Path | None = None) -> Path:
+def run_policy_suite_eval(
+    config_path: str | Path,
+    *,
+    output_dir: str | Path | None = None,
+    override_values: list[str] | None = None,
+) -> Path:
     cfg = load_config(config_path)
+    if override_values:
+        from .config import apply_overrides
+        from .trl_common import parse_cli_overrides
+
+        cfg = apply_overrides(cfg, parse_cli_overrides(override_values))
     output_dir = Path(output_dir or cfg.eval.get("output_dir", "outputs/rlhf/qwen25_05b_helpsteer3_eval_suite"))
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "plots").mkdir(exist_ok=True)
@@ -799,7 +895,11 @@ def run_policy_suite_eval(config_path: str | Path, *, output_dir: str | Path | N
     from transformers import AutoTokenizer
 
     model_name = str(cfg.model.get("name", "Qwen/Qwen2.5-0.5B-Instruct"))
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=bool(cfg.model.get("trust_remote_code", False)))
+    tokenizer_path = str(cfg.model.get("tokenizer_path", model_name))
+    tokenizer = AutoTokenizer.from_pretrained(
+        tokenizer_path,
+        trust_remote_code=bool(cfg.model.get("trust_remote_code", False)),
+    )
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -927,7 +1027,11 @@ def run_policy_suite_eval(config_path: str | Path, *, output_dir: str | Path | N
         return all(f"{label}_response" in row and f"{label}_reward" in row for row in rows)
 
     if load_mode == "resident":
-        policies = [(spec["label"], _load_policy(cfg, spec, device)) for spec in specs if not label_complete(spec["label"])]
+        policies = [
+            (spec["label"], _load_policy(cfg, spec, device, tokenizer))
+            for spec in specs
+            if not label_complete(spec["label"])
+        ]
         for label, policy in policies:
             fill_policy_outputs(policy, label)
     elif load_mode == "sequential":
@@ -936,7 +1040,7 @@ def run_policy_suite_eval(config_path: str | Path, *, output_dir: str | Path | N
             if label_complete(label):
                 print(f"eval {label}: already complete ({len(rows)}/{len(rows)}); skipping load")
                 continue
-            policy = _load_policy(cfg, spec, device)
+            policy = _load_policy(cfg, spec, device, tokenizer)
             fill_policy_outputs(policy, label)
             del policy
             if torch.cuda.is_available():

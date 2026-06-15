@@ -1,0 +1,64 @@
+experiment:
+  id: qwen25-05b-helpsteer3-trl-sft-v1
+  name: Qwen2.5 0.5B HelpSteer3 TRL SFT
+  group: qwen25-05b-helpsteer3-trl
+  tags: [trl, sft, lora, context-4096]
+  hypothesis: Response-safe preprocessing and deterministic LoRA SFT provide a cleaner PPO reference policy.
+
+model:
+  name: Qwen/Qwen2.5-0.5B-Instruct
+  dtype: bfloat16
+  trust_remote_code: false
+  attn_implementation: sdpa
+
+data:
+  cache_dir: outputs/trl/data/helpsteer3_qwen25_05b_4096
+  splits: [train, validation]
+  train_split: train
+  eval_split: validation
+  max_total_length: 4096
+  max_prompt_length: 3072
+  max_train_samples: null
+  max_validation_samples: null
+  max_eval_samples: null
+
+lora:
+  r: 16
+  lora_alpha: 32
+  lora_dropout: 0.0
+  bias: none
+  task_type: CAUSAL_LM
+  target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+
+train:
+  output_dir: outputs/trl/qwen25_05b_helpsteer3_sft_v1
+  run_name: qwen25-05b-helpsteer3-trl-sft-v1
+  seed: 839
+  per_device_train_batch_size: 4
+  per_device_eval_batch_size: 8
+  gradient_accumulation_steps: 4
+  num_train_epochs: 1
+  learning_rate: 5.0e-6
+  weight_decay: 0.0
+  max_grad_norm: 1.0
+  warmup_ratio: 0.03
+  lr_scheduler_type: cosine
+  optim: adamw_torch_fused
+  bf16: true
+  fp16: false
+  tf32: true
+  gradient_checkpointing: true
+  loss_type: nll
+  logging_steps: 10
+  eval_strategy: steps
+  eval_steps: 250
+  save_strategy: steps
+  save_steps: 250
+  save_total_limit: 2
+  dataloader_num_workers: 4
+  dataloader_pin_memory: true
+  remove_unused_columns: true
+  report_to: none
+  resume_from_checkpoint: null
+  checkpoint_sync_dir: null
+  final_sync_dir: null

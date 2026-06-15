@@ -4,6 +4,11 @@ This directory freezes the resolved configurations and outcome of the final
 pre-restructure run. It is the reference point for future RLHF experiments, not
 a claim that PPO improved the base model overall.
 
+The implementation is preserved at Git commit
+`6cbf214fcf1b91c7b756e303e533c2c86d2eba89`. This baseline used the project's
+custom SFT, reward-model, and token-level PPO trainers. New experiments use the
+Hugging Face TRL backend and should not silently overwrite these records.
+
 ## Lineage
 
 | Stage | Setting |

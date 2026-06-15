@@ -1,9 +1,13 @@
 -r requirements.txt
-transformers>=4.51.0
-datasets>=3.5.0
-accelerate>=1.6.0
-peft>=0.15.0
+# Keep the post-training stack reproducible. TRL's PPO trainer is experimental,
+# so deliberate upgrades should change these bounds and record a new baseline.
+torch>=2.6,<3
+trl[peft]==1.6.0
+transformers>=4.56.2,<5
+datasets>=4.7,<5
+accelerate>=1.6,<2
+peft>=0.15,<1
 bitsandbytes>=0.45.0
 safetensors>=0.4.5
 sentencepiece>=0.2.0
-protobuf>=5.26.0
+protobuf>=5.26.0,<6

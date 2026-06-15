@@ -2,6 +2,8 @@ schema_version: 1
 experiment_id: qwen25-05b-helpsteer3-ppo-long512-baseline
 status: completed
 role: frozen historical baseline
+source_commit: 6cbf214fcf1b91c7b756e303e533c2c86d2eba89
+training_backend: custom token-level PPO implementation
 
 lineage:
   base_model: Qwen/Qwen2.5-0.5B-Instruct

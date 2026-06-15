@@ -35,6 +35,37 @@ python3 -m pip install -r requirements-rlhf.txt
 python3 -m pip install -e .
 ```
 
+## Active TRL pipeline
+
+New experiments use **Hugging Face TRL 1.6.0** for SFT, reward modeling, and
+PPO. The migration keeps the project's HelpSteer3 preprocessing, experiment
+manifests, policy-suite evaluation, repetition diagnostics, and qualitative
+curation. It replaces the custom training loops with maintained trainer
+implementations while making the important RLHF choices explicit in YAML.
+
+```bash
+python scripts/rlhf_trl_prepare_data.py \
+  --config configs/trl/qwen25_05b_helpsteer3_sft.yaml
+
+python scripts/rlhf_trl_train_sft.py \
+  --config configs/trl/qwen25_05b_helpsteer3_sft.yaml
+
+python scripts/rlhf_trl_train_reward_model.py \
+  --config configs/trl/qwen25_05b_helpsteer3_reward.yaml
+
+python scripts/rlhf_trl_train_ppo.py \
+  --config configs/trl/qwen25_05b_helpsteer3_ppo.yaml
+
+python scripts/rlhf_evaluate_policy_suite.py \
+  --config configs/trl/qwen25_05b_helpsteer3_eval_suite.yaml
+```
+
+The Colab entry point is
+[`rlhf_trl_colab_pipeline.ipynb`](notebooks/rlhf_trl_colab_pipeline.ipynb).
+It provides a small end-to-end smoke profile and a longer A100 pilot profile.
+See [`trl_migration.md`](docs/trl_migration.md) for architecture, resume
+semantics, implementation-detail coverage, and the recommended first run.
+
 ## Repository structure and experiment records
 
 The importable implementation uses a standard `src/` layout:
@@ -91,7 +122,7 @@ You are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>
 
 Qwen chat/instruct models expect this format, which is produced through `tokenizer.apply_chat_template(...)`.
 
-## Final long-context configuration
+## Historical custom baseline configuration
 
 Earlier experiments used short output budgets such as 128 new tokens. Those runs were useful for debugging, but they clipped many responses and were not suitable for qualitative examples. We therefore ran a final long-context version.
 
@@ -121,7 +152,7 @@ A token-length diagnostic showed that the earlier 1024-token SFT/RM cap was too 
 
 At 4096 tokens, the training stages retain substantially more of each example.
 
-## Training stages
+## Historical custom training stages
 
 ### 1. SFT policy
 
@@ -319,6 +350,9 @@ The results do **not** show that a 0.5B PPO adapter beats Qwen2.5-Instruct at sc
 
 | Artifact | Purpose |
 |---|---|
+| `configs/trl/` | active TRL SFT, reward-model, PPO, and evaluation configurations |
+| `notebooks/rlhf_trl_colab_pipeline.ipynb` | Colab smoke/pilot orchestration |
+| `docs/trl_migration.md` | active backend design and operating guide |
 | `configs/rlhf/qwen25_05b_helpsteer3_sft.yaml` | final SFT configuration |
 | `configs/rlhf/qwen25_05b_helpsteer3_reward.yaml` | final reward-model configuration |
 | `configs/rlhf/qwen25_05b_helpsteer3_ppo.yaml` | final PPO configuration |
@@ -335,6 +369,7 @@ The results do **not** show that a 0.5B PPO adapter beats Qwen2.5-Instruct at sc
 
 ## Recommended reading order
 
+- [`trl_migration.md`](docs/trl_migration.md): active TRL architecture, commands, and first-run protocol.
 - [`rlhf_experiments.md`](docs/rlhf_experiments.md): experiment timeline, failed runs, archived 512-token baseline, and primary 1024-token evaluation.
 - [`rlhf_qualitative_audit.md`](docs/rlhf_qualitative_audit.md): manual analysis of useful responses, failures, and reward-model mismatches.
 - [`rlhf_curation_guide.md`](docs/rlhf_curation_guide.md): how to reproduce and extend the qualitative review.

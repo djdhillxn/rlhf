@@ -1,0 +1,64 @@
+experiment:
+  id: qwen25-05b-helpsteer3-trl-eval1024-v1
+  name: Qwen2.5 0.5B HelpSteer3 TRL policy-suite evaluation
+  group: qwen25-05b-helpsteer3-trl
+  tags: [trl, evaluation, policy-suite, response-1024]
+  parent_runs:
+    - qwen25-05b-helpsteer3-trl-sft-v1
+    - qwen25-05b-helpsteer3-trl-reward-v1
+    - qwen25-05b-helpsteer3-trl-ppo-v1
+
+model:
+  name: Qwen/Qwen2.5-0.5B-Instruct
+  tokenizer_path: outputs/trl/qwen25_05b_helpsteer3_sft_v1/final_merged_model
+  torch_dtype: bfloat16
+  trust_remote_code: false
+  policy_device_map: null
+
+reward_model:
+  format: trl
+  checkpoint_dir: outputs/trl/qwen25_05b_helpsteer3_reward_v1/final_merged_model
+  reward_center_path: outputs/trl/qwen25_05b_helpsteer3_reward_v1/reward_center.json
+  torch_dtype: bfloat16
+  device_map: null
+
+policies:
+  - label: base
+    format: trl
+    checkpoint_dir: null
+  - label: sft_trl
+    format: trl
+    checkpoint_dir: outputs/trl/qwen25_05b_helpsteer3_sft_v1/final_merged_model
+    torch_dtype: bfloat16
+  - label: ppo_trl
+    format: trl
+    checkpoint_dir: outputs/trl/qwen25_05b_helpsteer3_ppo_v1/final_merged_policy
+    torch_dtype: bfloat16
+
+data:
+  eval_split: validation
+
+generation:
+  max_prompt_length: 3072
+  max_new_tokens: 1024
+  min_new_tokens: 0
+  temperature: 0.7
+  top_p: 1.0
+  do_sample: true
+  repetition_penalty: 1.0
+  no_repeat_ngram_size: 0
+
+eval:
+  output_dir: outputs/trl/qwen25_05b_helpsteer3_eval1024_v1
+  seed: 839
+  device: cuda
+  num_prompts: all
+  shuffle: false
+  batch_size: 8
+  load_mode: sequential
+  resume: true
+  finalize_only: false
+  tie_epsilon: 0.0
+  sample_every: 25
+  partial_subdir: partial_policy_outputs
+  num_demo_rows: 24

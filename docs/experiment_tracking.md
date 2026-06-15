@@ -57,6 +57,10 @@ non-behavioral `experiment.*` metadata block by default. Use
 
 The frozen pre-restructure baseline lives at
 [`experiments/baselines/qwen25_05b_helpsteer3_ppo_long512/`](../experiments/baselines/qwen25_05b_helpsteer3_ppo_long512/).
+Its source implementation is Git commit
+`6cbf214fcf1b91c7b756e303e533c2c86d2eba89`. Active experiments use the
+checked-in `configs/trl/` configurations and record `trl_backend: true` in
+their manifests.
 
 ## Design Basis
 
