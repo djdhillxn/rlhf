@@ -1,0 +1,11 @@
+inherits: qwen25_05b_helpsteer3_eval.yaml
+
+eval:
+  output_dir: outputs/rlhf/qwen25_05b_helpsteer3_eval_full
+  # Use the complete HelpSteer3 validation preference split after filtering and prompt formatting.
+  # Equivalent accepted values: all, full, null, -1.
+  num_prompts: all
+  batch_size: 4
+  num_demo_rows: 20
+  seed: 839
+  shuffle: true

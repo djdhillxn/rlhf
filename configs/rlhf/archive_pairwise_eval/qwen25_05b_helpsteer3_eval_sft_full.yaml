@@ -1,0 +1,7 @@
+inherits: qwen25_05b_helpsteer3_eval_sft.yaml
+
+eval:
+  output_dir: outputs/rlhf/qwen25_05b_helpsteer3_eval_sft_full
+  num_prompts: all
+  batch_size: 4
+  num_demo_rows: 20

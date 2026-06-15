@@ -1,0 +1,13 @@
+inherits: qwen25_05b_helpsteer3_eval.yaml
+
+eval:
+  output_dir: outputs/rlhf/qwen25_05b_helpsteer3_eval_sft
+  baseline_label: base
+  baseline_checkpoint_dir: null
+  candidate_label: sft
+  policy_checkpoint_dir: outputs/rlhf/qwen25_05b_helpsteer3_sft/checkpoint_final
+  num_prompts: 200
+  batch_size: 4
+  num_demo_rows: 20
+  seed: 839
+  shuffle: true

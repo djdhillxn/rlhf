@@ -1,0 +1,41 @@
+model:
+  name: Qwen/Qwen2.5-0.5B-Instruct
+  torch_dtype: bfloat16
+  trust_remote_code: false
+  policy_device_map: null
+  policy_load_in_4bit: false
+  policy_load_in_8bit: false
+  ref_device_map: null
+  ref_torch_dtype: bfloat16
+  ref_load_in_4bit: false
+  ref_load_in_8bit: false
+
+reward_model:
+  checkpoint_dir: outputs/rlhf/qwen25_05b_helpsteer3_reward/checkpoint_best
+  torch_dtype: bfloat16
+  device_map: null
+  load_in_4bit: false
+  load_in_8bit: false
+
+data:
+  eval_split: validation
+
+generation:
+  max_prompt_length: 768
+  max_new_tokens: 128
+  min_new_tokens: 16
+  temperature: 0.7
+  top_p: 0.9
+  do_sample: false
+  repetition_penalty: 1.02
+  no_repeat_ngram_size: 3
+
+eval:
+  output_dir: outputs/rlhf/qwen25_05b_helpsteer3_eval
+  device: cuda
+  policy_checkpoint_dir: outputs/rlhf/qwen25_05b_helpsteer3_ppo/checkpoint_final
+  seed: 839
+  shuffle: true
+  num_prompts: 200
+  batch_size: 4
+  num_demo_rows: 16

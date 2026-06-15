@@ -1,0 +1,18 @@
+inherits: qwen25_05b_helpsteer3_eval.yaml
+
+# Use this for manual example curation when a 128-token answer is visibly clipped.
+# It is slower than the default eval but produces more complete qualitative examples.
+generation:
+  max_new_tokens: 256
+  min_new_tokens: 16
+  do_sample: false
+  repetition_penalty: 1.02
+  no_repeat_ngram_size: 3
+
+eval:
+  output_dir: outputs/rlhf/qwen25_05b_helpsteer3_eval_curation_long
+  num_prompts: 200
+  batch_size: 4
+  num_demo_rows: 20
+  seed: 839
+  shuffle: true

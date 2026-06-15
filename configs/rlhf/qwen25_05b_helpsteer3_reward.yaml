@@ -1,0 +1,61 @@
+experiment:
+  id: qwen25-05b-helpsteer3-reward-4096
+  name: Qwen2.5 0.5B HelpSteer3 reward model 4096
+  group: qwen25-05b-helpsteer3
+  tags: [reward-model, lora, bradley-terry, context-4096]
+  hypothesis: Long-context pairwise training improves preference coverage while preserving useful domain-level ranking accuracy.
+
+model:
+  name: Qwen/Qwen2.5-0.5B-Instruct
+  torch_dtype: bfloat16
+  trust_remote_code: false
+  device_map: null
+  load_in_4bit: false
+  load_in_8bit: false
+  gradient_checkpointing: true
+
+lora:
+  enabled: true
+  r: 32
+  lora_alpha: 64
+  lora_dropout: 0.05
+  bias: none
+  task_type: CAUSAL_LM
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+
+data:
+  train_split: train
+  eval_split: validation
+  max_length: 4096
+  max_train_samples: null
+  max_eval_samples: null
+
+train:
+  output_dir: outputs/rlhf/qwen25_05b_helpsteer3_reward_4096
+  seed: 839
+  device: cuda
+  # Preference/RM training is not normally run for dozens of epochs. We use more
+  # than the initial smoke run, but keep checkpoint_best to avoid overfitting.
+  epochs: 1
+  batch_size: 24
+  eval_batch_size: 48
+  gradient_accumulation_steps: 1
+  learning_rate: 7.5e-6
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  log_every: 10
+  eval_every: 100
+  eval_max_batches: null
+  final_eval_max_batches: null
+  artifact_every: 50
+  save_every_steps: 0
+  num_workers: 12
+  pin_memory: true
+  persistent_workers: true

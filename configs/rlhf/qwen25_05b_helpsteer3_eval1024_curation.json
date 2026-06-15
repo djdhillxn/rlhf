@@ -1,0 +1,85 @@
+{
+  "title": "Selected qualitative examples from the 1024-token policy suite",
+  "selections": [
+    {
+      "idx": 2,
+      "category": "qualified improvement",
+      "note": "PPO gives the most structured PostgreSQL tutorial of the three, but the response reaches the cap and still requires factual review."
+    },
+    {
+      "idx": 0,
+      "category": "near-tie",
+      "note": "All three policies produce usable JSON-to-React examples. Base receives the highest reward, while PPO is slightly stronger than SFT."
+    },
+    {
+      "idx": 1210,
+      "category": "qualified improvement",
+      "note": "PPO replaces a bare refusal with a supportive response to an ambiguous distress-related prompt."
+    },
+    {
+      "idx": 1158,
+      "category": "qualified improvement",
+      "note": "PPO responds conversationally instead of discussing its lack of feelings, although some crow facts are overstated."
+    },
+    {
+      "idx": 418,
+      "category": "qualified improvement",
+      "note": "PPO follows more of the requested character setup than Base or SFT, but still confuses roles and scene details."
+    },
+    {
+      "idx": 1511,
+      "category": "qualified improvement",
+      "note": "PPO provides a broader data-cleaning tutorial and code examples, with some technical details that still need correction."
+    },
+    {
+      "idx": 1970,
+      "category": "factual failure",
+      "note": "PPO fabricates studies and citations about character displacement and speciation."
+    },
+    {
+      "idx": 1303,
+      "category": "factual and safety failure",
+      "note": "PPO gives chemically incorrect reaction steps and unsafe procedural confidence."
+    },
+    {
+      "idx": 176,
+      "category": "degeneration",
+      "note": "PPO enters a repeated dialogue loop and consumes the full generation budget."
+    },
+    {
+      "idx": 1835,
+      "category": "relevance and repetition failure",
+      "note": "The requested short title becomes an unrelated, repetitive Pixel 8 continuation."
+    },
+    {
+      "idx": 1548,
+      "category": "reward-model mismatch",
+      "note": "The reward model strongly prefers Base despite its fabricated and massively repeated attendee list; PPO is qualitatively more useful."
+    },
+    {
+      "idx": 346,
+      "category": "reward-model mismatch",
+      "note": "PPO receives the highest reward in the entire suite while containing an obvious repeated-phrase collapse."
+    },
+    {
+      "idx": 1281,
+      "category": "reward-model mismatch",
+      "note": "PPO repeats the user's question instead of answering it, yet receives a large positive reward margin."
+    },
+    {
+      "idx": 1579,
+      "category": "reward-model mismatch",
+      "note": "PPO repeatedly promises to create the requested profile without actually producing it, while receiving a high reward."
+    },
+    {
+      "idx": 656,
+      "category": "reward-model mismatch",
+      "note": "A near-total Vietnamese repetition loop still receives a positive reward and beats both alternatives."
+    },
+    {
+      "idx": 86,
+      "category": "detected degeneration",
+      "note": "PPO repeats one lyric-like phrase for the entire response; the low reward correctly identifies this failure."
+    }
+  ]
+}

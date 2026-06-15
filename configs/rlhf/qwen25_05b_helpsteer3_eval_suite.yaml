@@ -1,0 +1,73 @@
+experiment:
+  id: qwen25-05b-helpsteer3-policy-suite-eval1024
+  name: Base, SFT, and PPO 1024-token policy suite
+  group: qwen25-05b-helpsteer3
+  tags: [evaluation, response-1024, full-validation]
+  hypothesis: A 1024-token evaluation budget reduces truncation and exposes longer-horizon policy behavior.
+  parent_runs:
+    - qwen25-05b-helpsteer3-sft-4096
+    - qwen25-05b-helpsteer3-ppo-long512-baseline
+
+model:
+  name: Qwen/Qwen2.5-0.5B-Instruct
+  torch_dtype: bfloat16
+  trust_remote_code: false
+  policy_device_map: null
+  policy_load_in_4bit: false
+  policy_load_in_8bit: false
+
+reward_model:
+  checkpoint_dir: outputs/rlhf/qwen25_05b_helpsteer3_reward_4096_epoch2/checkpoint_best
+  torch_dtype: bfloat16
+  device_map: null
+  load_in_4bit: false
+  load_in_8bit: false
+
+data:
+  eval_split: validation
+
+# This controls evaluation only. PPO rollouts were trained with 512 new tokens,
+# but inference can use a larger budget. 3072 prompt + 1024 response = 4096
+# total tokens, matching the SFT/reward-model training sequence budget.
+generation:
+  max_prompt_length: 3072
+  max_new_tokens: 1024
+  min_new_tokens: 0
+  temperature: 0.7
+  top_p: 0.9
+  do_sample: false
+  repetition_penalty: 1.0
+  no_repeat_ngram_size: 0
+
+# One list, one evaluator, all pairwise comparisons derived from the same generations.
+# For interrupted PPO runs, point directly to whichever checkpoint exists.
+policies:
+  - label: base
+    checkpoint_dir: null
+  - label: sft_4096
+    checkpoint_dir: outputs/rlhf/qwen25_05b_helpsteer3_sft_4096/checkpoint_final
+  - label: ppo_4096_ep2_u400
+    checkpoint_dir: outputs/rlhf/qwen25_05b_helpsteer3_ppo_4096_epoch2_long512/checkpoints/update_00400
+
+
+eval:
+  # Keep this separate from the completed 512-token evaluation. Resume shards
+  # are specific to the generation settings and must not be mixed.
+  output_dir: outputs/rlhf/qwen25_05b_helpsteer3_eval_suite_4096_ep2_u400_eval1024
+  device: cuda
+  seed: 839
+  shuffle: true
+  # Use 200 first. Change to all for the full 2017-example validation pass.
+  num_prompts: all
+  # The completed 1024-token A100 run used 128. Reduce this on smaller GPUs.
+  batch_size: 128
+  num_demo_rows: 16
+  tie_epsilon: 0.0
+  # resident = load all policies once; fastest but more VRAM.
+  # sequential = one policy at a time; slower but safer if the 1024-token eval OOMs.
+  load_mode: resident
+
+  # New resumability options
+  resume: true
+  partial_subdir: partial_policy_outputs
+  finalize_only: false
