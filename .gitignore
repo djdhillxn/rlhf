@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.DS_Store
+
+# Keep run metrics/configs/metadata under outputs/ commit-friendly, but do not
+# publish heavy model checkpoint files.
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Keep private report drafts/build products local. Public figures and summaries
+# live under docs/figures_and_summaries/.
+report/
+
+# Demo videos can be regenerated from checkpoints.
+outputs/videos/
+*.mp4
