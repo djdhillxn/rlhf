@@ -99,6 +99,12 @@ python scripts/rlhf_audit_policy_suite.py \
 Every command accepts repeated `--set dotted.path=value` overrides. Resolved
 configs and manifests are written into each output directory.
 
+Before a Colab stage, `scripts/rlhf_trl_doctor.py` can validate the exact
+interpreter, package versions, CUDA visibility, prepared dataset paths, and
+local/Drive write permissions. The Colab notebook runs this automatically
+before SFT and streams child-process output so the original traceback is not
+hidden behind a generic `CalledProcessError`.
+
 The TRL evaluation suite loads the tokenizer saved with SFT, including its
 distinct PAD token. The Base model is resized once for that token before
 generation. This keeps policy padding and reward-model final-token pooling
@@ -143,8 +149,11 @@ in repetition.
 
 ## Versioning note
 
-TRL PPO is experimental. `requirements-rlhf.txt` pins TRL 1.6.0, requires
-PyTorch 2.6 or newer for TRL's FSDP API imports, and bounds its core
-dependencies. An upgrade should be treated as an experiment change:
+TRL PPO is experimental. `requirements-rlhf.txt` pins TRL 1.6.0 and the
+matching PyTorch 2.6.0, torchvision 0.21.0, and torchaudio 2.6.0 family. TRL's
+FSDP imports require this newer PyTorch generation, and keeping the three
+PyTorch packages aligned avoids a common Colab binary mismatch. Core
+dependencies are otherwise bounded. An upgrade should be treated as an
+experiment change:
 review upstream PPO source, run the smoke profile, and record a new baseline
 before launching a costly run.
