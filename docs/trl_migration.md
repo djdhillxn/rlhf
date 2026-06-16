@@ -120,11 +120,20 @@ would make the Base and SFT columns identical.
 
 ## Colab and checkpoints
 
-Use local Colab storage for active training and copy checkpoints to Drive with
-`train.checkpoint_sync_dir` and final artifacts with `train.final_sync_dir`.
-Local SSD access is faster than training directly against mounted Drive. SFT
-and reward training support exact Transformers checkpoint resume through
-`train.resume_from_checkpoint`.
+The Colab notebook assumes the repository has already been cloned, typically
+under Google Drive, and that `REPO_DIR` points at that clone. It no longer
+clones the repository itself. Keeping the code checkout on Drive is fine
+because Python files, configs, and notebooks are small relative to model
+training.
+
+Use local Colab storage for active training outputs and copy checkpoints to
+Drive with `train.checkpoint_sync_dir` and final artifacts with
+`train.final_sync_dir`. Local SSD access is faster than writing model shards,
+datasets, logs, and temporary Trainer state directly into mounted Drive. It
+also keeps the Git repository small, avoids accidental commits of large model
+files, and makes it easier to download or share the source tree without
+pulling checkpoints. SFT and reward training support exact Transformers
+checkpoint resume through `train.resume_from_checkpoint`.
 
 The current experimental TRL PPO trainer path writes checkpoints, but this
 wrapper does not expose an exact `resume_from_checkpoint` path. It rejects that
