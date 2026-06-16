@@ -1,24 +1,24 @@
 experiment:
-  id: qwen25-05b-helpsteer3-trl-eval1024-v1
-  name: Qwen2.5 0.5B HelpSteer3 TRL policy-suite evaluation
+  id: qwen25-05b-helpsteer3-trl-eval1024-a100-full-r1024
+  name: Qwen2.5 0.5B HelpSteer3 TRL A100 full policy-suite evaluation
   group: qwen25-05b-helpsteer3-trl
-  tags: [trl, evaluation, policy-suite, response-1024]
+  tags: [trl, evaluation, policy-suite, response-1024, ppo-response-1024, a100-full]
   parent_runs:
-    - qwen25-05b-helpsteer3-trl-sft-v1
-    - qwen25-05b-helpsteer3-trl-reward-v1
-    - qwen25-05b-helpsteer3-trl-ppo-v1
+    - qwen25-05b-helpsteer3-trl-sft-a100-full
+    - qwen25-05b-helpsteer3-trl-reward-a100-full
+    - qwen25-05b-helpsteer3-trl-ppo-a100-full-r1024
 
 model:
   name: Qwen/Qwen2.5-0.5B-Instruct
-  tokenizer_path: outputs/trl/qwen25_05b_helpsteer3_sft_v1/final_merged_model
+  tokenizer_path: outputs/trl/qwen25_05b_helpsteer3_sft_a100_full/final_merged_model
   torch_dtype: bfloat16
   trust_remote_code: false
   policy_device_map: null
 
 reward_model:
   format: trl
-  checkpoint_dir: outputs/trl/qwen25_05b_helpsteer3_reward_v1/final_merged_model
-  reward_center_path: outputs/trl/qwen25_05b_helpsteer3_reward_v1/reward_center.json
+  checkpoint_dir: outputs/trl/qwen25_05b_helpsteer3_reward_a100_full/final_merged_model
+  reward_center_path: outputs/trl/qwen25_05b_helpsteer3_reward_a100_full/reward_center.json
   torch_dtype: bfloat16
   device_map: null
 
@@ -28,11 +28,11 @@ policies:
     checkpoint_dir: null
   - label: sft_trl
     format: trl
-    checkpoint_dir: outputs/trl/qwen25_05b_helpsteer3_sft_v1/final_merged_model
+    checkpoint_dir: outputs/trl/qwen25_05b_helpsteer3_sft_a100_full/final_merged_model
     torch_dtype: bfloat16
   - label: ppo_trl
     format: trl
-    checkpoint_dir: outputs/trl/qwen25_05b_helpsteer3_ppo_v1/final_merged_policy
+    checkpoint_dir: outputs/trl/qwen25_05b_helpsteer3_ppo_a100_full_r1024/final_merged_policy
     torch_dtype: bfloat16
 
 data:
@@ -49,12 +49,12 @@ generation:
   no_repeat_ngram_size: 0
 
 eval:
-  output_dir: outputs/trl/qwen25_05b_helpsteer3_eval1024_v1
+  output_dir: outputs/trl/qwen25_05b_helpsteer3_eval1024_a100_full_r1024
   seed: 839
   device: cuda
   num_prompts: all
   shuffle: false
-  batch_size: 8
+  batch_size: 16
   load_mode: sequential
   resume: true
   finalize_only: false

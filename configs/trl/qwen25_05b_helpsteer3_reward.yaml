@@ -1,13 +1,13 @@
 experiment:
-  id: qwen25-05b-helpsteer3-trl-reward-v1
-  name: Qwen2.5 0.5B HelpSteer3 TRL reward model
+  id: qwen25-05b-helpsteer3-trl-reward-a100-full
+  name: Qwen2.5 0.5B HelpSteer3 TRL reward model A100 full run
   group: qwen25-05b-helpsteer3-trl
-  tags: [trl, reward-model, lora, calibrated, context-4096]
+  tags: [trl, reward-model, lora, calibrated, context-4096, a100-full]
   hypothesis: SFT initialization, controlled scalar-head initialization, and reward centering improve PPO reward quality.
-  parent_runs: [qwen25-05b-helpsteer3-trl-sft-v1]
+  parent_runs: [qwen25-05b-helpsteer3-trl-sft-a100-full]
 
 model:
-  sft_model_path: outputs/trl/qwen25_05b_helpsteer3_sft_v1/final_merged_model
+  sft_model_path: outputs/trl/qwen25_05b_helpsteer3_sft_a100_full/final_merged_model
   dtype: bfloat16
   trust_remote_code: false
   attn_implementation: sdpa
@@ -30,11 +30,11 @@ lora:
   target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
 
 train:
-  output_dir: outputs/trl/qwen25_05b_helpsteer3_reward_v1
-  run_name: qwen25-05b-helpsteer3-trl-reward-v1
+  output_dir: outputs/trl/qwen25_05b_helpsteer3_reward_a100_full
+  run_name: qwen25-05b-helpsteer3-trl-reward-a100-full
   seed: 839
-  per_device_train_batch_size: 8
-  per_device_eval_batch_size: 16
+  per_device_train_batch_size: 16
+  per_device_eval_batch_size: 32
   gradient_accumulation_steps: 4
   num_train_epochs: 1
   learning_rate: 5.0e-6

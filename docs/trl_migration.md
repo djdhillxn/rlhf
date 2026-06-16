@@ -134,24 +134,25 @@ segment's initialization, retain the original SFT reference, and record the
 parent run. This is continuation training, not exact optimizer/dataloader
 resume.
 
-## Recommended first run
+## Current full A100 run
 
 First run the notebook's `smoke` profile. It uses small dataset slices, short
 responses, and a few optimizer steps to verify tokenizer growth, dataset
 columns, adapter merging, reward centering, PPO rollout, evaluation, and audit.
 
-After that passes, run the checked-in pilot:
+After that passes, run the checked-in full profile:
 
-- SFT: one epoch, effective batch 16, 4096 total tokens.
-- Reward model: one epoch, effective batch 32, 4096 total tokens.
-- PPO: 2,048 episodes, rollout batch 16, four PPO epochs, 512 response tokens.
-- Evaluation: first inspect a 128-prompt subset, then run the full 2,017-prompt
-  1024-token suite only after PPO diagnostics look healthy.
+- SFT: one epoch, effective batch 32, 4096 total tokens.
+- Reward model: one epoch, effective batch 64, 4096 total tokens.
+- PPO: 100,000 episodes, rollout batch 32, four PPO epochs, 1024 response tokens.
+- Evaluation: full 2,017-prompt policy suite with a 1024-token generation cap.
 
-The pilot is intentionally smaller than a final campaign. Continue only if
-reward accuracy/calibration are credible and PPO logs show finite losses,
-bounded KL, non-collapsing entropy, reasonable EOS rates, and no sharp growth
-in repetition.
+This is deliberately aggressive for an 80 GB A100. If Colab reports OOM,
+reduce PPO `train.per_device_train_batch_size` from 4 to 2 and
+`ppo.local_rollout_forward_batch_size` from 8 to 4 before changing the learning
+rate or KL settings. Continue only if reward accuracy/calibration are credible
+and PPO logs show finite losses, bounded KL, non-collapsing entropy, reasonable
+EOS rates, and no sharp growth in repetition.
 
 ## Versioning note
 

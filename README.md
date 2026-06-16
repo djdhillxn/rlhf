@@ -62,9 +62,14 @@ python scripts/rlhf_evaluate_policy_suite.py \
 
 The Colab entry point is
 [`rlhf_trl_colab_pipeline.ipynb`](notebooks/rlhf_trl_colab_pipeline.ipynb).
-It provides a small end-to-end smoke profile and a longer A100 pilot profile.
+It provides a small end-to-end smoke profile and a full A100 profile.
 See [`trl_migration.md`](docs/trl_migration.md) for architecture, resume
-semantics, implementation-detail coverage, and the recommended first run.
+semantics, implementation-detail coverage, and the current full-run settings.
+
+The checked-in TRL configs now target the serious A100 run: one full-data SFT
+epoch, one full-data reward-model epoch, 100,000 PPO episodes with 1024-token
+rollouts, and a full 2,017-prompt policy-suite evaluation with 1024 generated
+tokens per response.
 
 ## Repository structure and experiment records
 
@@ -351,7 +356,7 @@ The results do **not** show that a 0.5B PPO adapter beats Qwen2.5-Instruct at sc
 | Artifact | Purpose |
 |---|---|
 | `configs/trl/` | active TRL SFT, reward-model, PPO, and evaluation configurations |
-| `notebooks/rlhf_trl_colab_pipeline.ipynb` | Colab smoke/pilot orchestration |
+| `notebooks/rlhf_trl_colab_pipeline.ipynb` | Colab smoke/full-run orchestration |
 | `docs/trl_migration.md` | active backend design and operating guide |
 | `configs/rlhf/qwen25_05b_helpsteer3_sft.yaml` | final SFT configuration |
 | `configs/rlhf/qwen25_05b_helpsteer3_reward.yaml` | final reward-model configuration |

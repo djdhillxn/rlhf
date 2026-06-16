@@ -96,6 +96,42 @@ def _check_data(cfg, stage: str, errors: list[str]) -> None:
             )
 
 
+def _tokenizer_source(cfg, stage: str) -> str:
+    if stage == "sft":
+        return str(cfg.model.name)
+    if stage == "reward":
+        return str(cfg.model.sft_model_path)
+    return str(cfg.model.policy_model_path)
+
+
+def _check_tokenizer(cfg, stage: str, errors: list[str]) -> None:
+    try:
+        from rlhf.trl_common import load_tokenizer
+
+        source = _tokenizer_source(cfg, stage)
+        tokenizer = load_tokenizer(
+            source,
+            trust_remote_code=bool(cfg.model.get("trust_remote_code", False)),
+            padding_side="left" if stage == "ppo" else "right",
+        )
+        print(f"Tokenizer source: {source}")
+        print(f"EOS token/id: {tokenizer.eos_token!r} / {tokenizer.eos_token_id}")
+        print(f"PAD token/id: {tokenizer.pad_token!r} / {tokenizer.pad_token_id}")
+        if tokenizer.eos_token_id is None:
+            errors.append("Tokenizer has no EOS token; PPO stop_token=eos would be ill-defined.")
+        if tokenizer.pad_token_id is None:
+            errors.append("Tokenizer has no PAD token after setup.")
+        if tokenizer.eos_token_id is not None and tokenizer.pad_token_id == tokenizer.eos_token_id:
+            errors.append("Tokenizer PAD and EOS token IDs must be distinct.")
+        if "qwen" in source.lower() and tokenizer.eos_token != "<|im_end|>":
+            print(
+                "Warning: Qwen chat models usually use '<|im_end|>' as EOS; "
+                "verify this tokenizer before the full run."
+            )
+    except Exception as exc:
+        errors.append(f"tokenizer check failed: {type(exc).__name__}: {exc}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Validate a TRL/Colab runtime before starting an RLHF stage.")
     parser.add_argument("--config", required=True)
@@ -112,6 +148,7 @@ def main() -> None:
     _check_versions(errors)
     _check_imports(errors)
     _check_cuda(errors, require_cuda=not args.allow_cpu)
+    _check_tokenizer(cfg, args.stage, errors)
     _check_data(cfg, args.stage, errors)
     _check_directory(Path(str(cfg.train.output_dir)), "local output", errors)
     for key, label in (
