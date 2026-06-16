@@ -1,7 +1,7 @@
 # RLHF Future Work
 
 > **Implementation status:** the first systems item from this research program
-> is now implemented as a TRL 1.6.0 migration. The migration improves the
+> is now implemented as a TRL migration. The migration improves the
 > training foundation but has not yet produced a new empirical result. The
 > controlled evaluations and model-quality questions below therefore remain
 > future work.

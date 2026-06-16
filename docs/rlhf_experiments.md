@@ -230,7 +230,7 @@ The 1024-token suite is a more revealing endpoint than the shorter evaluation. I
 ## Phase 8: TRL migration
 
 The next experimental line migrates SFT, reward modeling, and PPO to Hugging
-Face TRL 1.6.0 while preserving the HelpSteer3 data contract, run manifests,
+Face TRL while preserving the HelpSteer3 data contract, run manifests,
 evaluation suite, and qualitative audit. This is an implementation change, not
 a claimed model improvement. No TRL result should be compared with the frozen
 baseline until the smoke run passes and the pilot completes under a recorded

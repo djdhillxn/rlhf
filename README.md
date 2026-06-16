@@ -31,14 +31,14 @@ The implementation therefore keeps a dedicated `src/rlhf/` package instead of di
 ## Setup
 
 ```bash
-python3 -m pip install -r requirements-rlhf.txt
+python3 -m pip install -r requirements.txt
 python3 -m pip install -e .
 ```
 
 ## Active TRL pipeline
 
-New experiments use **Hugging Face TRL 1.6.0** for SFT, reward modeling, and
-PPO. The migration keeps the project's HelpSteer3 preprocessing, experiment
+New experiments use **Hugging Face TRL** for SFT, reward modeling, and PPO.
+The migration keeps the project's HelpSteer3 preprocessing, experiment
 manifests, policy-suite evaluation, repetition diagnostics, and qualitative
 curation. It replaces the custom training loops with maintained trainer
 implementations while making the important RLHF choices explicit in YAML.

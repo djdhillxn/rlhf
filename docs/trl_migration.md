@@ -2,8 +2,8 @@
 
 ## Purpose
 
-The active training path uses Hugging Face TRL 1.6.0 for supervised
-fine-tuning, reward modeling, and PPO. The previous custom implementation is
+The active training path uses Hugging Face TRL for supervised fine-tuning,
+reward modeling, and PPO. The previous custom implementation is
 preserved as a frozen historical baseline at Git commit
 `6cbf214fcf1b91c7b756e303e533c2c86d2eba89`.
 
@@ -55,7 +55,7 @@ Implementation Details of RLHF with PPO*:
 
 | Detail | Active behavior |
 |---|---|
-| Disable dropout during PPO | TRL disables dropout in policy, reference, reward, and value models; LoRA dropout is required to be zero. |
+| Disable dropout during PPO | The model loader explicitly sets PyTorch dropout modules to `p=0.0`; LoRA dropout is required to be zero; reward training also passes `disable_dropout=True`. |
 | Match stored behavior probabilities | TRL stores generation logits and applies the same temperature during rollout and PPO ratio recomputation. Before trainer construction, the wrapper also neutralizes Qwen's model-card repetition and sampling heuristics so they cannot silently alter sampled probabilities. |
 | Preserve complete responses and EOS | Repository preprocessing reserves completion space, appends EOS, and truncates prompt history first. |
 | Initialize RM from SFT | Reward training loads the merged SFT model. |
@@ -90,7 +90,7 @@ python scripts/rlhf_evaluate_policy_suite.py \
   --config configs/trl/qwen25_05b_helpsteer3_eval_suite.yaml
 
 python scripts/rlhf_audit_policy_suite.py \
-  --eval-dir outputs/trl/qwen25_05b_helpsteer3_eval1024_v1 \
+  --eval-dir outputs/trl/qwen25_05b_helpsteer3_eval1024_a100_full_r1024 \
   --base-label base \
   --sft-label sft_trl \
   --ppo-label ppo_trl
@@ -102,8 +102,8 @@ configs and manifests are written into each output directory.
 Before a Colab stage, `scripts/rlhf_trl_doctor.py` can validate the exact
 interpreter, package versions, CUDA visibility, prepared dataset paths, and
 local/Drive write permissions. The Colab notebook runs this automatically
-before SFT and streams child-process output so the original traceback is not
-hidden behind a generic `CalledProcessError`.
+before SFT, reward modeling, and PPO, and streams child-process output so the
+original traceback is not hidden behind a generic `CalledProcessError`.
 
 The TRL evaluation suite loads the tokenizer saved with SFT, including its
 distinct PAD token. The Base model is resized once for that token before
@@ -126,13 +126,13 @@ Local SSD access is faster than training directly against mounted Drive. SFT
 and reward training support exact Transformers checkpoint resume through
 `train.resume_from_checkpoint`.
 
-TRL 1.6.0's experimental PPO trainer writes checkpoints but does not implement
-an exact `resume_from_checkpoint` path. The wrapper rejects that option instead
-of pretending it is safe. For long PPO experiments, run deliberate segments:
-finish one segment, use its merged policy and saved value model as the next
-segment's initialization, retain the original SFT reference, and record the
-parent run. This is continuation training, not exact optimizer/dataloader
-resume.
+The current experimental TRL PPO trainer path writes checkpoints, but this
+wrapper does not expose an exact `resume_from_checkpoint` path. It rejects that
+option instead of pretending it is safe. For long PPO experiments, run
+deliberate segments: finish one segment, use its merged policy and saved value
+model as the next segment's initialization, retain the original SFT reference,
+and record the parent run. This is continuation training, not exact
+optimizer/dataloader resume.
 
 ## Current full A100 run
 
@@ -156,11 +156,9 @@ EOS rates, and no sharp growth in repetition.
 
 ## Versioning note
 
-TRL PPO is experimental. `requirements-rlhf.txt` pins TRL 1.6.0 and the
-matching PyTorch 2.6.0, torchvision 0.21.0, and torchaudio 2.6.0 family. TRL's
-FSDP imports require this newer PyTorch generation, and keeping the three
-PyTorch packages aligned avoids a common Colab binary mismatch. Core
-dependencies are otherwise bounded. An upgrade should be treated as an
-experiment change:
-review upstream PPO source, run the smoke profile, and record a new baseline
-before launching a costly run.
+TRL PPO is experimental. `requirements.txt` intentionally installs the
+current available package stack rather than pinning exact versions. The doctor
+script therefore validates imports and the specific TRL trainer APIs used by
+this repository before expensive stages begin. A dependency upgrade should
+still be treated as an experiment change: run the smoke profile and record the
+resolved package versions before launching a costly run.

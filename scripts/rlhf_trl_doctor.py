@@ -9,43 +9,40 @@ import sys
 from importlib import metadata
 from pathlib import Path
 
-from packaging.version import Version
-
 from _bootstrap import ensure_repo_root_on_path
 
 
-REQUIRED_VERSIONS = {
-    "torch": ("2.6.0", "2.6.1"),
-    "torchvision": ("0.21.0", "0.21.1"),
-    "torchaudio": ("2.6.0", "2.6.1"),
-    "trl": ("1.6.0", "1.6.1"),
-    "transformers": ("4.56.2", "5"),
-    "datasets": ("4.7", "5"),
-    "accelerate": ("1.6", "2"),
-    "peft": ("0.15", "1"),
-}
+REQUIRED_PACKAGES = (
+    "torch",
+    "torchvision",
+    "torchaudio",
+    "torchao",
+    "trl",
+    "transformers",
+    "datasets",
+    "accelerate",
+    "peft",
+    "numpy",
+    "pandas",
+    "protobuf",
+)
 
 
 def _check_versions(errors: list[str]) -> None:
     print(f"Python: {sys.version.split()[0]} ({sys.executable})")
     print(f"Platform: {platform.platform()}")
-    for package, (minimum, maximum) in REQUIRED_VERSIONS.items():
+    for package in REQUIRED_PACKAGES:
         try:
             installed = metadata.version(package)
         except metadata.PackageNotFoundError:
             errors.append(f"{package} is not installed")
             continue
         print(f"{package}: {installed}")
-        version = Version(installed.split("+", 1)[0])
-        if not (Version(minimum) <= version < Version(maximum)):
-            errors.append(f"{package} {installed} is outside [{minimum}, {maximum})")
 
 
 def _check_imports(errors: list[str]) -> None:
     for module in (
         "torch",
-        "torchvision",
-        "torchaudio",
         "transformers",
         "datasets",
         "accelerate",
@@ -56,6 +53,17 @@ def _check_imports(errors: list[str]) -> None:
             __import__(module)
         except Exception as exc:
             errors.append(f"import {module} failed: {type(exc).__name__}: {exc}")
+
+
+def _check_trl_apis(errors: list[str]) -> None:
+    try:
+        from trl import RewardConfig, RewardTrainer, SFTConfig, SFTTrainer
+        from trl.experimental.ppo import PPOConfig, PPOTrainer
+    except Exception as exc:
+        errors.append(f"TRL trainer API check failed: {type(exc).__name__}: {exc}")
+        return
+    names = [SFTConfig, SFTTrainer, RewardConfig, RewardTrainer, PPOConfig, PPOTrainer]
+    print("TRL trainer APIs:", ", ".join(item.__name__ for item in names))
 
 
 def _check_cuda(errors: list[str], require_cuda: bool) -> None:
@@ -147,6 +155,7 @@ def main() -> None:
     errors: list[str] = []
     _check_versions(errors)
     _check_imports(errors)
+    _check_trl_apis(errors)
     _check_cuda(errors, require_cuda=not args.allow_cpu)
     _check_tokenizer(cfg, args.stage, errors)
     _check_data(cfg, args.stage, errors)

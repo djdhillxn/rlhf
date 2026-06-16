@@ -23,11 +23,19 @@ def model_load_kwargs(cfg: dict[str, Any]) -> dict[str, Any]:
     return kwargs
 
 
+def disable_dropout_modules(model: Any) -> None:
+    """Make PPO log-probability ratios reproducible even if a backbone defines dropout."""
+    for module in model.modules():
+        if isinstance(module, nn.Dropout):
+            module.p = 0.0
+
+
 def load_causal_model(model_name_or_path: str, tokenizer: Any, cfg: dict[str, Any]):
     from transformers import AutoModelForCausalLM
 
     model = AutoModelForCausalLM.from_pretrained(model_name_or_path, **model_load_kwargs(cfg))
     resize_embeddings_if_needed(model, tokenizer)
+    disable_dropout_modules(model)
     if hasattr(model.config, "use_cache"):
         model.config.use_cache = False
     model.config.pad_token_id = tokenizer.pad_token_id
@@ -44,6 +52,7 @@ def load_sequence_classification_model(model_name_or_path: str, tokenizer: Any, 
         **model_load_kwargs(cfg),
     )
     resize_embeddings_if_needed(model, tokenizer)
+    disable_dropout_modules(model)
     model.config.pad_token_id = tokenizer.pad_token_id
     model.config.eos_token_id = tokenizer.eos_token_id
     return model
