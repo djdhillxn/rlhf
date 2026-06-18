@@ -1,9 +1,9 @@
 experiment:
-  id: qwen25-05b-helpsteer3-trl-ppo-a100-full-r1024
-  name: Qwen2.5 0.5B HelpSteer3 TRL PPO A100 full run
+  id: qwen25-05b-helpsteer3-trl-ppo-nplus-exact-eos-r512
+  name: Qwen2.5 0.5B HelpSteer3 TRL PPO N+ exact-EOS run
   group: qwen25-05b-helpsteer3-trl
-  tags: [trl, ppo, lora, response-1024, n-plus, a100-full]
-  hypothesis: A full-data 1024-token PPO rollout budget can improve long-response alignment while retaining KL control, zero dropout, EOS penalties, and an RM-initialized critic.
+  tags: [trl, ppo, lora, response-512, n-plus, exact-eos, a100-full]
+  hypothesis: A 512-token PPO rollout budget with the N+ fixed-length EOS trick can reduce reward hacking and repetition while retaining KL control, zero dropout, and an RM-initialized critic.
   parent_runs:
     - qwen25-05b-helpsteer3-trl-sft-a100-full
     - qwen25-05b-helpsteer3-trl-reward-a100-full
@@ -23,7 +23,7 @@ data:
   train_split: train
   eval_split: validation
   max_train_samples: null
-  max_eval_samples: 512
+  max_eval_samples: 64
 
 lora:
   r: 16
@@ -34,15 +34,18 @@ lora:
   target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
 
 ppo:
-  total_episodes: 100000
-  response_length: 1024
+  total_episodes: 16000
+  response_length: 512
   temperature: 0.7
   stop_token: eos
-  missing_eos_penalty: 1.0
+  fixed_length_generation: true
+  require_eos_for_reward: true
+  missing_eos_reward: -1.0
+  missing_eos_penalty: 0.0
   num_ppo_epochs: 4
   num_mini_batches: 1
-  local_rollout_forward_batch_size: 8
-  kl_coef: 0.05
+  local_rollout_forward_batch_size: 4
+  kl_coef: 0.10
   kl_estimator: k1
   cliprange: 0.2
   cliprange_value: 0.2
@@ -50,16 +53,17 @@ ppo:
   gamma: 1.0
   lam: 0.95
   whiten_rewards: false
-  num_sample_generations: 8
+  num_sample_generations: 1
 
 train:
-  output_dir: outputs/trl/qwen25_05b_helpsteer3_ppo_a100_full_r1024
-  run_name: qwen25-05b-helpsteer3-trl-ppo-a100-full-r1024
+  output_dir: outputs/trl/qwen25_05b_helpsteer3_ppo_nplus_exact_eos_r512_kl10
+  run_name: qwen25-05b-helpsteer3-trl-ppo-nplus-exact-eos-r512-kl10
   seed: 839
   per_device_train_batch_size: 4
-  per_device_eval_batch_size: 8
-  gradient_accumulation_steps: 8
+  per_device_eval_batch_size: 4
+  gradient_accumulation_steps: 16
   learning_rate: 3.0e-6
+  adam_epsilon: 1.0e-5
   weight_decay: 0.0
   max_grad_norm: 1.0
   warmup_ratio: 0.0
@@ -71,8 +75,8 @@ train:
   gradient_checkpointing: true
   logging_steps: 1
   save_strategy: steps
-  save_steps: 100
-  save_total_limit: 3
+  save_steps: 50
+  save_total_limit: 8
   report_to: none
   resume_from_checkpoint: null
   checkpoint_sync_dir: null

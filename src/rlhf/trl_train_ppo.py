@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import copy
 import gc
+import inspect
 from pathlib import Path
 from typing import Any
 
@@ -22,8 +24,74 @@ from .trl_models import (
 )
 
 
+def _patch_trl_generate_for_fixed_length(ppo_module: Any) -> None:
+    """Force PPO rollouts to sample the configured length before EOS truncation.
+
+    TRL already truncates generated responses at the stop token before reward
+    scoring. The N+ / Stiennon-style EOS trick also samples a fixed number of
+    tokens first, so an early EOS should not stop generation.
+    """
+    if getattr(ppo_module, "_rlhf_fixed_length_generate_patch", False):
+        return
+
+    if not hasattr(ppo_module, "generate"):
+        raise RuntimeError("TRL PPO module does not expose generate; cannot apply fixed-length EOS patch.")
+    original_generate = ppo_module.generate
+
+    def generate_without_eos_stop(lm_backbone, queries, pad_token_id, generation_config):
+        generation_config = copy.deepcopy(generation_config)
+        generation_config.eos_token_id = None
+        generation_config.forced_eos_token_id = None
+        return original_generate(lm_backbone, queries, pad_token_id, generation_config)
+
+    ppo_module.generate = generate_without_eos_stop
+    ppo_module._rlhf_fixed_length_generate_patch = True
+
+
+def _patch_trl_reward_for_required_eos(ppo_module: Any) -> None:
+    """Replace invalid no-EOS reward scores with a constant reward.
+
+    TRL's `missing_eos_penalty` subtracts a scalar from the learned reward.
+    The N+ implementation describes a stricter EOS trick: if the sampled
+    completion has no EOS token after truncation, the reward-model score is
+    treated as an invalid constant (commonly -1) instead of trusting the RM.
+    """
+    if getattr(ppo_module, "_rlhf_required_eos_reward_patch", False):
+        return
+
+    if not hasattr(ppo_module, "get_reward"):
+        raise RuntimeError("TRL PPO module does not expose get_reward; cannot apply required-EOS reward patch.")
+    original_get_reward = ppo_module.get_reward
+
+    def get_reward_with_required_eos(model, query_responses, pad_token_id, context_length):
+        reward_logits, final_rewards, sequence_lengths = original_get_reward(
+            model,
+            query_responses,
+            pad_token_id,
+            context_length,
+        )
+        eos_token_id = getattr(model, "rlhf_required_eos_token_id", None)
+        missing_eos_reward = getattr(model, "rlhf_missing_eos_reward", None)
+        if eos_token_id is None or missing_eos_reward is None:
+            return reward_logits, final_rewards, sequence_lengths
+
+        responses = query_responses[:, context_length:]
+        valid_response_tokens = responses != pad_token_id
+        has_eos = ((responses == int(eos_token_id)) & valid_response_tokens).any(dim=1)
+        replacement = torch.full_like(final_rewards, float(missing_eos_reward))
+        final_rewards = torch.where(has_eos, final_rewards, replacement)
+        return reward_logits, final_rewards, sequence_lengths
+
+    ppo_module.get_reward = get_reward_with_required_eos
+    ppo_module._rlhf_required_eos_reward_patch = True
+
+
 def run_trl_ppo(cfg: dict[str, Any], *, config_path: str | Path | None = None) -> Path:
     from trl.experimental.ppo import PPOConfig, PPOTrainer
+
+    ppo_trainer_module = inspect.getmodule(PPOTrainer)
+    if ppo_trainer_module is None:
+        raise RuntimeError("Could not locate the TRL PPO trainer module.")
 
     if cfg["train"].get("resume_from_checkpoint"):
         raise ValueError(
@@ -88,7 +156,24 @@ def run_trl_ppo(cfg: dict[str, Any], *, config_path: str | Path | None = None) -
 
     train_cfg = cfg["train"]
     ppo_cfg = cfg["ppo"]
-    args = PPOConfig(
+    if bool(ppo_cfg.get("fixed_length_generation", False)):
+        _patch_trl_generate_for_fixed_length(ppo_trainer_module)
+
+    eos_trick = {
+        "fixed_length_generation": bool(ppo_cfg.get("fixed_length_generation", False)),
+        "require_eos_for_reward": bool(ppo_cfg.get("require_eos_for_reward", False)),
+        "missing_eos_reward": float(ppo_cfg.get("missing_eos_reward", -1.0)),
+        "eos_token_id": int(tokenizer.eos_token_id) if tokenizer.eos_token_id is not None else None,
+    }
+    if eos_trick["require_eos_for_reward"]:
+        if eos_trick["eos_token_id"] is None:
+            raise ValueError("PPO require_eos_for_reward=true requires tokenizer.eos_token_id.")
+        _patch_trl_reward_for_required_eos(ppo_trainer_module)
+        setattr(reward_model, "rlhf_required_eos_token_id", int(eos_trick["eos_token_id"]))
+        setattr(reward_model, "rlhf_missing_eos_reward", float(eos_trick["missing_eos_reward"]))
+    write_json(eos_trick, output_dir / "ppo_eos_trick.json")
+
+    ppo_config_kwargs = dict(
         output_dir=str(output_dir),
         seed=int(train_cfg.get("seed", 839)),
         data_seed=int(train_cfg.get("data_seed", train_cfg.get("seed", 839))),
@@ -131,6 +216,9 @@ def run_trl_ppo(cfg: dict[str, Any], *, config_path: str | Path | None = None) -
         sft_model_path=str(cfg["model"]["policy_model_path"]),
         reward_model_path=reward_path,
     )
+    if "adam_epsilon" in inspect.signature(PPOConfig).parameters:
+        ppo_config_kwargs["adam_epsilon"] = float(train_cfg.get("adam_epsilon", 1e-5))
+    args = PPOConfig(**ppo_config_kwargs)
     trainer = PPOTrainer(
         args=args,
         processing_class=tokenizer,
@@ -180,6 +268,7 @@ def run_trl_ppo(cfg: dict[str, Any], *, config_path: str | Path | None = None) -
         "reference_model_path": reference_path,
         "reward_model_path": reward_path,
         "reward_offset": reward_offset,
+        "eos_trick": eos_trick,
         "sampling_distribution": sampling_distribution,
         "last_metrics": log_history[-1] if log_history else {},
     }

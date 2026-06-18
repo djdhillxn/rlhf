@@ -1012,8 +1012,16 @@ def run_policy_suite_eval(
             print(f"eval {label}: already complete ({len(rows)}/{len(rows)}); skipping")
             return
 
-        pbar = tqdm(range(0, len(pending_indices), batch_size), desc=f"eval {label}")
-        for offset in pbar:
+        progress_every = int(cfg.eval.get("progress_every", 5))
+        total_rows = len(rows)
+        pbar = tqdm(
+            range(0, len(pending_indices), batch_size),
+            desc=f"eval {label}",
+            dynamic_ncols=True,
+            mininterval=5,
+            leave=True,
+        )
+        for batch_number, offset in enumerate(pbar, start=1):
             batch_indices = pending_indices[offset : offset + batch_size]
             batch_prompts = [prompts[i] for i in batch_indices]
             outputs = _generate_and_score(policy, reward_model, tokenizer, batch_prompts, generation=generation, device=device)
@@ -1047,6 +1055,13 @@ def run_policy_suite_eval(
                 partial_subdir=partial_subdir,
             )
             pbar.set_postfix(done=completed_by_label[label], total=len(rows))
+            completed = completed_by_label[label]
+            if batch_number == 1 or batch_number % progress_every == 0 or completed == total_rows:
+                print(
+                    f"[eval {label}] {completed}/{total_rows} complete "
+                    f"({100.0 * completed / max(total_rows, 1):.1f}%)",
+                    flush=True,
+                )
 
     def label_complete(label: str) -> bool:
         return all(f"{label}_response" in row and f"{label}_reward" in row for row in rows)
