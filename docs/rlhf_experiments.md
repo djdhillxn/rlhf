@@ -50,7 +50,7 @@ The project therefore moved to 4096-token SFT/RM training, reducing truncation o
 
 ## Phase 3: SFT-4096
 
-Final SFT settings:
+Custom-loop SFT settings:
 
 ```yaml
 model: Qwen/Qwen2.5-0.5B-Instruct
@@ -95,7 +95,7 @@ The second epoch did not produce a dramatic jump, but the model remained substan
 
 ## Phase 5: PPO 4096 epoch-2 long-512
 
-Final PPO settings:
+Custom-loop PPO settings:
 
 ```yaml
 policy_init_checkpoint_dir: outputs/rlhf/qwen25_05b_helpsteer3_sft_4096/checkpoint_final
@@ -119,7 +119,7 @@ Output directory:
 outputs/rlhf/qwen25_05b_helpsteer3_ppo_4096_epoch2_long512/
 ```
 
-The long PPO run was intentionally aggressive. It did not collapse: empty response rate stayed at zero and the final evaluation produced coherent long responses. But the policy remained close to the SFT reference and did not outperform the base model overall.
+The long PPO run was intentionally aggressive. It did not collapse: empty response rate stayed at zero and the custom-loop evaluation produced coherent long responses. But the policy remained close to the SFT reference and did not outperform the base model overall.
 
 ## Phase 6: 512-token policy-suite baseline
 
@@ -158,7 +158,7 @@ outputs/rlhf/qwen25_05b_helpsteer3_eval_suite_4096_ep2_u400/
 
 This run was a major improvement over the 96- and 128-token preliminary evaluations, but roughly 30% of responses still reached the cap. It is retained as a baseline rather than the primary report.
 
-## Phase 7: Primary 1024-token evaluation and audit
+## Phase 7: Historical 1024-token custom-loop evaluation and audit
 
 The evaluation cap was doubled without changing the 3072-token prompt allowance, so prompt plus response still fits within the 4096-token SFT and reward-model sequence budget.
 
@@ -208,11 +208,11 @@ The longer allowance substantially reduced the number of cap hits:
 | SFT | 604 | 205 | 399 |
 | PPO | 599 | 234 | 365 |
 
-This is a clear operational improvement: fewer responses stop only because the evaluator exhausts its generation allowance. The longer generations also expose more repetition. PPO responses above a 25% repeated word-level 4-gram fraction increased from 224 in the 512-token suite to 325 in the 1024-token suite, or 16.11% of the final evaluation. Severe repetition above 50% increased from 74 to 156 PPO responses.
+This is a clear operational improvement: fewer responses stop only because the evaluator exhausts its generation allowance. The longer generations also expose more repetition. PPO responses above a 25% repeated word-level 4-gram fraction increased from 224 in the 512-token suite to 325 in the 1024-token suite, or 16.11% of that custom-loop evaluation. Severe repetition above 50% increased from 74 to 156 PPO responses.
 
 Manual review also found fabricated citations, incorrect chemistry, irrelevant continuations, and high-reward repetition loops. These failures demonstrate that reward-model score is not a substitute for qualitative or domain-specific evaluation.
 
-The 512- and 1024-token suites are not a perfectly controlled token-limit ablation. The earlier run used evaluation batch size 8, while the later run used batch size 128. Most responses changed, including many that had not reached the old cap. Batched bfloat16 generation can cross close logit boundaries, while evaluator revisions or environment differences can also affect exact greedy continuations. The latest run remains the primary report because it is complete and less truncated, but differences should be described as run-to-run changes associated with the longer evaluation configuration rather than attributed solely to `max_new_tokens`.
+The 512- and 1024-token suites are not a perfectly controlled token-limit ablation. The earlier run used evaluation batch size 8, while the later run used batch size 128. Most responses changed, including many that had not reached the old cap. Batched bfloat16 generation can cross close logit boundaries, while evaluator revisions or environment differences can also affect exact greedy continuations. At the time, the 1024-token run became the primary custom-loop report because it was complete and less truncated. It is now retained as historical evidence rather than the final headline result.
 
 Associated artifacts:
 
@@ -221,20 +221,19 @@ Associated artifacts:
 - `outputs/rlhf/qwen25_05b_helpsteer3_eval_suite_4096_ep2_u400_eval1024/qualitative_audit_auto.md`: automated full-suite audit.
 - `outputs/rlhf/qwen25_05b_helpsteer3_eval_suite_4096_ep2_u400_eval1024/selected_qualitative_examples.md`: selected prompts and complete Base/SFT/PPO responses.
 
-## Conclusion
+## Historical custom-loop conclusion
 
-The experiments produced an end-to-end RLHF pipeline for Qwen2.5-0.5B-Instruct using HelpSteer3. The final long-context reward model reached 71.62% pairwise validation accuracy, PPO training remained stable, and the evaluation system completed and audited all 2017 validation prompts. PPO changed behavior and produced useful local improvements, but it did not globally outperform the base instruction model.
+The custom implementation produced an end-to-end RLHF pipeline for Qwen2.5-0.5B-Instruct using HelpSteer3. The long-context reward model reached 71.62% pairwise validation accuracy, PPO training remained stable, and the evaluation system completed and audited all 2017 validation prompts. PPO changed behavior and produced useful local improvements, but it did not globally outperform the base instruction model.
 
-The 1024-token suite is a more revealing endpoint than the shorter evaluation. It reduces accidental truncation while exposing weaknesses in stopping, factuality, and reward-model judgment. The main result is therefore the complete implementation and the evidence it produces about both successful alignment behavior and failure modes. Manually reviewed examples are in [`rlhf_qualitative_audit.md`](rlhf_qualitative_audit.md), and the resulting research program is in [`rlhf_future_work.md`](rlhf_future_work.md).
+The 1024-token custom suite was more revealing than the shorter evaluation. It reduced accidental truncation while exposing weaknesses in stopping, factuality, and reward-model judgment. These results are retained as historical baselines rather than the current headline result.
 
 ## Phase 8: TRL migration
 
-The next experimental line migrates SFT, reward modeling, and PPO to Hugging
+The next experimental line migrated SFT, reward modeling, and PPO to Hugging
 Face TRL while preserving the HelpSteer3 data contract, run manifests,
-evaluation suite, and qualitative audit. This is an implementation change, not
-a claimed model improvement. No TRL result should be compared with the frozen
-baseline until the smoke run passes and the pilot completes under a recorded
-software environment.
+evaluation suite, and qualitative audit. This began as an implementation
+change, then became the final reported training path after the smoke run and
+full Colab run completed under recorded software environments.
 
 The migration adds response-safe pretokenization, a distinct padding token,
 zero dropout for PPO, behavior log-probabilities matched to the sampling
@@ -244,3 +243,116 @@ critic initialized from the reward model. The active protocol is documented in
 [`trl_migration.md`](trl_migration.md). The previous implementation remains
 reproducible at commit
 `6cbf214fcf1b91c7b756e303e533c2c86d2eba89`.
+
+
+## Phase 9: Final TRL run and evaluation
+
+The final run uses the TRL pipeline rather than the earlier custom training loops. The previous phases remain important because they identified the failure modes that shaped the final settings: long-context preprocessing, reward-model initialization, reward centering, missing-EOS handling, checkpoint-safe evaluation, and repetition diagnostics.
+
+### SFT
+
+| Metric / setting | Value |
+|---|---:|
+| Train examples | 36,264 |
+| Validation examples | 1,917 |
+| Epochs | 1 |
+| Max total length | 4096 |
+| Max prompt length | 3072 |
+| LoRA rank / alpha | 16 / 32 |
+| Effective batch size | 32 |
+| Learning rate | `5e-6` |
+| Train loss | 1.0556 |
+| Eval loss | 1.1127 |
+| Eval mean token accuracy | 72.02% |
+
+### Reward model
+
+The final reward model resumes the one-epoch TRL reward run and trains to two total epochs. It starts from the merged SFT model, uses controlled scalar-head initialization, reward centering, and a persisted reward offset.
+
+| Metric | Value |
+|---|---:|
+| Validation preference rows | 1,917 |
+| Total epochs | 2 |
+| LoRA rank / alpha | 32 / 64 |
+| Effective batch size | 64 |
+| Learning rate | `5e-6` |
+| Audit accuracy | 65.62% |
+| Mean reward margin | 0.3578 |
+| Eval loss | 0.6166 |
+| Reward offset | -0.1985 |
+
+Domain accuracy:
+
+| Domain | Accuracy | Count |
+|---|---:|---:|
+| Code | 70.23% | 430 |
+| General | 62.91% | 914 |
+| STEM | 59.26% | 243 |
+| Multilingual | 71.82% | 330 |
+
+This reward model has lower validation accuracy than the older custom reward model, but the downstream PPO run is more usable because the implementation also improves EOS handling, reward centering, PPO mechanics, and evaluation discipline. The reward model is still a proxy judge rather than ground truth.
+
+### PPO
+
+The final PPO run follows the N+ implementation details more closely than earlier attempts: zero dropout, behavior log-probabilities matched to sampling temperature, fixed-length generation with EOS truncation, invalid reward for missing EOS, Adam epsilon `1e-5`, reward whitening, an RM-initialized critic, and a frozen SFT reference.
+
+The run was configured for 12,000 episodes and evaluated after 6,400 episodes / 100 optimizer steps.
+
+| Setting / metric | Value |
+|---|---:|
+| PPO response length | 768 new tokens |
+| PPO epochs per rollout batch | 4 |
+| KL coefficient | 0.07 |
+| Temperature | 0.7 |
+| Missing-EOS reward | -1.0 |
+| Reward whitening | enabled |
+| Learning rate | `3e-6` |
+| Batch / accumulation | 2 / 32 |
+| Evaluated episodes | 6,400 |
+| Evaluated optimizer steps | 100 |
+| Average objective KL | 1.8278 |
+| Final objective KL | 2.1648 |
+| Average EOS count | 44.57 / 64 samples |
+| Final EOS count | 38 / 64 samples |
+
+### Final policy-suite evaluation
+
+The final evaluator used all 2,017 HelpSteer3 validation prompts with a 3072-token prompt budget and 1024-token generation budget.
+
+| Policy | Wins | Win rate | Mean reward | Median tokens | Cap-hit rate |
+|---|---:|---:|---:|---:|---:|
+| Base | 718 | 35.60% | 0.0803 | 331 | 8.82% |
+| SFT | 508 | 25.19% | 0.0652 | 371 | 13.39% |
+| PPO | 775 | 38.42% | 0.7300 | 520 | 27.42% |
+| Tie | 16 | 0.79% | - | - | - |
+
+Pairwise:
+
+| Comparison | Left wins | Right wins | Ties | Right win rate | Mean right-left delta |
+|---|---:|---:|---:|---:|---:|
+| Base vs SFT | 1158 | 837 | 22 | 41.50% | -0.0151 |
+| Base vs PPO | 981 | 1027 | 9 | 50.92% | +0.6497 |
+| SFT vs PPO | 840 | 1164 | 13 | 57.71% | +0.6648 |
+
+Domain-level PPO results against Base:
+
+| Domain | PPO wins | Base wins | Ties | PPO win rate |
+|---|---:|---:|---:|---:|
+| Code | 188 | 250 | 0 | 42.92% |
+| General | 529 | 399 | 3 | 56.82% |
+| STEM | 118 | 126 | 1 | 48.16% |
+| Multilingual | 192 | 206 | 5 | 47.64% |
+
+### Final audit
+
+| Policy | Repeated 4-grams >25% | Repeated 4-grams >50% | Cap-hit rate |
+|---|---:|---:|---:|
+| Base | 204 (10.11%) | 61 (3.02%) | 8.82% |
+| SFT | 405 (20.08%) | 171 (8.48%) | 13.39% |
+| PPO | 643 (31.88%) | 319 (15.82%) | 27.42% |
+
+The final PPO adapter is the strongest model under the learned reward model, but it is also more verbose and more repetitive than the baselines. The curated export keeps both sides visible: 50 examples, split into 25 positive and 25 negative cases.
+
+## Final conclusion
+
+The final TRL run is the project endpoint for this phase. It demonstrates a complete, reproducible RLHF pipeline on a small instruction model, with measurable PPO gains under the learned reward model and a serious qualitative audit of the remaining failure modes. The result should be presented as a systems-and-evaluation achievement, not as proof that the 0.5B PPO policy is broadly superior to Qwen2.5-Instruct.

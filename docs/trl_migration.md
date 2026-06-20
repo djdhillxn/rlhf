@@ -63,9 +63,9 @@ Implementation Details of RLHF with PPO*:
 | Center reward scale | TRL center regularization plus a persisted demonstration-score offset are used. |
 | Initialize critic from RM | PPO loads the trained RM weights as the value model. |
 | Use a fixed SFT reference | The PPO adapter is disabled for reference log-probabilities. |
-| Penalize missing EOS | PPO uses EOS stopping and a configurable missing-EOS penalty. |
+| Penalize missing EOS | PPO uses fixed-length generation with EOS handling and a configurable invalid reward for missing EOS; the final run used `-1.0`. |
 | Normalize advantages | TRL performs masked advantage whitening. |
-| Keep reward whitening explicit | It is disabled by default and can be enabled as a controlled ablation. |
+| Keep reward whitening explicit | The setting is explicit in config/overrides and was enabled in the final PPO run. |
 
 TRL is not a guarantee against reward hacking, weak judges, poor data, or bad
 hyperparameters. The reward audit and human-readable response review remain
@@ -90,10 +90,10 @@ python scripts/rlhf_evaluate_policy_suite.py \
   --config configs/trl/qwen25_05b_helpsteer3_eval_suite.yaml
 
 python scripts/rlhf_audit_policy_suite.py \
-  --eval-dir outputs/trl/qwen25_05b_helpsteer3_eval1024_a100_full_r1024 \
+  --eval-dir rlhf_runs/checkpoints_ckpt100_full \
   --base-label base \
   --sft-label sft_trl \
-  --ppo-label ppo_trl
+  --ppo-label ppo_exact_ckpt100
 ```
 
 Every command accepts repeated `--set dotted.path=value` overrides. Resolved
@@ -143,25 +143,18 @@ model as the next segment's initialization, retain the original SFT reference,
 and record the parent run. This is continuation training, not exact
 optimizer/dataloader resume.
 
-## Current full A100 run
+## Final full run
 
-First run the notebook's `smoke` profile. It uses small dataset slices, short
-responses, and a few optimizer steps to verify tokenizer growth, dataset
-columns, adapter merging, reward centering, PPO rollout, evaluation, and audit.
+The final reported run used the Colab full profile plus explicit overrides recorded in `rlhf_runs/rlhf_trl_colab_pipeline_final.ipynb`.
 
-After that passes, run the checked-in full profile:
+- SFT: one epoch, effective batch 32, 4096 total tokens, LoRA rank 16.
+- Reward model: two total epochs, effective batch 64, 4096 total tokens, LoRA rank 32, resumed from the first reward-model checkpoint.
+- PPO: configured for 12,000 episodes and evaluated after 6,400 episodes / 100 optimizer steps; 768-token PPO rollouts; four PPO epochs; KL coefficient 0.07; reward whitening enabled; missing-EOS reward `-1.0`; Adam epsilon `1e-5`.
+- Evaluation: full 2,017-prompt policy suite with a 1024-token generation cap and a 3072-token prompt budget.
 
-- SFT: one epoch, effective batch 32, 4096 total tokens.
-- Reward model: one epoch, effective batch 64, 4096 total tokens.
-- PPO: 100,000 episodes, rollout batch 32, four PPO epochs, 1024 response tokens.
-- Evaluation: full 2,017-prompt policy suite with a 1024-token generation cap.
+The final policy-suite evaluation reports PPO winning 50.92% of pairwise comparisons against Base and 57.71% against SFT under the learned reward model. This is the best PPO result in the project, but it still requires caveats: PPO has a 27.42% cap-hit rate and 31.88% of PPO responses exceed the 25% repeated 4-gram threshold. The final documentation therefore treats reward score as a diagnostic signal, not as a human-quality label.
 
-This is deliberately aggressive for an 80 GB A100. If Colab reports OOM,
-reduce PPO `train.per_device_train_batch_size` from 4 to 2 and
-`ppo.local_rollout_forward_batch_size` from 8 to 4 before changing the learning
-rate or KL settings. Continue only if reward accuracy/calibration are credible
-and PPO logs show finite losses, bounded KL, non-collapsing entropy, reasonable
-EOS rates, and no sharp growth in repetition.
+The output directory name still contains `r512` from an earlier planned setting. The executed notebook overrides `ppo.response_length` to 768; documentation should use the executed override rather than the stale directory label.
 
 ## Versioning note
 

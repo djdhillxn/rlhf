@@ -1,6 +1,6 @@
 # Historical A100 40GB RLHF run profile
 
-This note preserves the settings used during an early short-context stage of the project. It is not the configuration used for the final 4096-token SFT/reward-model runs, 512-token PPO rollouts, or 1024-token policy-suite evaluation. Use the repository [`README.md`](../README.md) for the current workflow.
+This note preserves the settings used during an early short-context stage of the project. It is not the configuration used for the final 4096-token SFT/reward-model runs, 768-token PPO rollouts, or 1024-token policy-suite evaluation. Use the repository [`README.md`](../README.md) for the current workflow.
 
 The historical profile targeted Google Colab A100 40GB with Qwen2.5-0.5B-Instruct and favored speed over the earlier low-memory debug defaults.
 

@@ -62,6 +62,29 @@ Its source implementation is Git commit
 checked-in `configs/trl/` configurations and record `trl_backend: true` in
 their manifests.
 
+
+## Final TRL Run Records
+
+The final reported run is represented by lightweight Colab exports under:
+
+```text
+rlhf_runs_lightweight_export/qwen25_05b_helpsteer3_trl_a100_full/full/
+```
+
+Important stage records:
+
+| Stage | Record |
+|---|---|
+| SFT | `sft/run_summary.json`, `sft/config_resolved.yaml` |
+| Reward epoch 1 | `reward/run_summary.json`, `reward/reward_audit.json` |
+| Reward epoch 2 | `reward_epoch2/run_summary.json`, `reward_epoch2/reward_audit.json` |
+| PPO selected adapter | `ppo_nplus_exact_eos_r512_b64_kl10_rm_ep2/checkpoints/checkpoint-100/trainer_state.json` |
+| Final evaluation | `checkpoints_ckpt100_full/policy_suite_summary.json`, `policy_suite_samples.jsonl` |
+| Qualitative audit | `checkpoints_ckpt100_full/qualitative_audit_auto.md` |
+| Portfolio curation | `rlhf_runs/portfolio_curated_policy_comparisons_ckpt100.json` |
+
+The PPO directory name includes `r512` from an earlier plan; the executed notebook overrides the final PPO response length to 768. When there is a conflict, the executed notebook and child-process command output take precedence over stale path names.
+
 ## Design Basis
 
 The `src/` package layout follows the PyPA recommendation that importable code

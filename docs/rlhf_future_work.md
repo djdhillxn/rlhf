@@ -1,10 +1,9 @@
 # RLHF Future Work
 
-> **Implementation status:** the first systems item from this research program
-> is now implemented as a TRL migration. The migration improves the
-> training foundation but has not yet produced a new empirical result. The
-> controlled evaluations and model-quality questions below therefore remain
-> future work.
+> **Implementation status:** the TRL migration is now the final reported
+> training path. It produced the strongest PPO result in this project, while
+> preserving the main open problems: reward reliability, repetition, stopping,
+> factuality, and controlled checkpoint selection.
 
 The current system establishes that the complete training and evaluation path works: long-context supervised fine-tuning, pairwise reward modeling, KL-controlled token-level PPO, resumable policy-suite generation, and qualitative auditing all run on real HelpSteer3 data. The negative and mixed results are therefore useful design evidence. They identify the parts of the alignment stack that now limit performance and suggest a sequence of experiments that is more informative than simply increasing the number of PPO updates.
 
@@ -20,7 +19,7 @@ Length should be controlled explicitly. Longer responses have more opportunities
 
 ## Improve reward-model reliability
 
-The reward model is the central bottleneck exposed by the qualitative audit. It reaches 71.62% validation pairwise accuracy, but several extreme scores contradict obvious response quality. The next reward-model dataset should include hard negatives drawn from the policy itself: repeated loops, prompt restatements, fabricated citations, irrelevant continuations, malformed code, and confident scientific errors. These examples are more representative of PPO's optimization distribution than random rejected HelpSteer3 answers.
+The reward model is the central bottleneck exposed by the qualitative audit. It reaches 65.62% validation pairwise accuracy in the final TRL run, and several extreme evaluation scores still contradict obvious response quality. The next reward-model dataset should include hard negatives drawn from the policy itself: repeated loops, prompt restatements, fabricated citations, irrelevant continuations, malformed code, and confident scientific errors. These examples are more representative of PPO's optimization distribution than random rejected HelpSteer3 answers.
 
 Training should become multi-objective rather than relying on one scalar preference target to capture every desirable property. One approach is to add auxiliary heads or separate judges for relevance, factuality, repetition, safety, and style, then combine their outputs with transparent weights. Another is to retain a general preference reward while applying deterministic penalties for measurable defects such as repeated n-grams, missing EOS, empty responses, language mismatch, or failure to answer a direct question. Deterministic checks should not replace learned preference, but they can prevent the optimizer from exploiting known blind spots.
 
@@ -42,9 +41,9 @@ The project should also compare SFT checkpoints across epochs instead of assumin
 
 ## Redesign PPO around observed failures
 
-Training PPO with 512-token rollouts was a reasonable compute and stability choice, but the 1024-token evaluation shows that behavior after token 512 matters. A direct 1024-token PPO run is worth testing only as a controlled experiment, not as an assumed improvement. It should begin from the same SFT checkpoint, use the same prompt set, and be compared with the 512-token PPO policy at matched update-token budgets. Otherwise, twice-longer rollouts also change the amount of optimization data and the effective training horizon.
+Training PPO with 768-token rollouts was a reasonable compute and stability choice, but the 1024-token evaluation shows that behavior near and beyond the rollout horizon still matters. A direct 1024-token PPO run is worth testing only as a controlled experiment, not as an assumed improvement. It should begin from the same SFT checkpoint, use the same prompt set, and be compared with 512-token and 768-token PPO policies at matched update-token budgets. Otherwise, twice-longer rollouts also change the amount of optimization data and the effective training horizon.
 
-A curriculum may be more stable than beginning with 1024-token rollouts. PPO could start at 256 or 512 tokens, then increase the response allowance after reward, KL, EOS rate, and repetition metrics stabilize. The curriculum should include explicit stopping objectives so that the policy is not merely given more room to continue. Missing-EOS penalties, length-aware terminal rewards, and penalties for repeated n-grams can be introduced gradually and monitored for unintended short-answer collapse.
+A curriculum may be more stable than beginning with very long rollouts. PPO could start at 256 or 512 tokens, move to 768, then increase the response allowance after reward, KL, EOS rate, and repetition metrics stabilize. The curriculum should include explicit stopping objectives so that the policy is not merely given more room to continue. Missing-EOS penalties, length-aware terminal rewards, and penalties for repeated n-grams can be introduced gradually and monitored for unintended short-answer collapse.
 
 The reward should distinguish the useful prefix from the degraded suffix. A single terminal score assigns the same sequence-level outcome across all response tokens, even when quality changes late in the generation. Process rewards, segment-level scoring, or periodic reward-model evaluations could provide denser information. At minimum, the final response can be scored both in full and at intermediate truncation points. If the 256-token prefix scores well but the 1024-token answer scores poorly, the optimizer should learn that continuing was harmful.
 
@@ -62,7 +61,7 @@ Online methods remain relevant when the policy produces errors that are absent f
 
 ## Improve decoding and stopping
 
-Inference settings should be evaluated as part of the policy, not treated as an afterthought. The current suite uses greedy decoding with no repetition penalty and no no-repeat n-gram constraint. This cleanly exposes model behavior, but deployment-oriented evaluation should compare modest repetition penalties, no-repeat constraints, temperature and top-p sampling, and task-aware stopping. These controls can reduce visible degeneration even before retraining, although they may also suppress legitimate repeated syntax in code or structured text.
+Inference settings should be evaluated as part of the policy, not treated as an afterthought. The final suite uses sampled decoding at temperature 0.7 with no repetition penalty and no no-repeat n-gram constraint. This exposes realistic sampled behavior, but deployment-oriented evaluation should compare modest repetition penalties, no-repeat constraints, greedy decoding, temperature and top-p sweeps, and task-aware stopping. These controls can reduce visible degeneration even before retraining, although they may also suppress legitimate repeated syntax in code or structured text.
 
 Dynamic token budgets are preferable to one universal cap. Short classification, title-generation, and extraction prompts rarely need 1024 tokens, while code explanations and long-form synthesis may. A length predictor or prompt-class rule could assign response budgets by task. The evaluator should report both quality and compute, since a policy that needs twice as many tokens for the same usefulness is not necessarily better.
 
@@ -92,7 +91,7 @@ Generated reports should be reproducible from lightweight commands. The audit sc
 
 ## A practical next sequence
 
-The highest-value next experiment is not a larger PPO run. It is a controlled re-evaluation at 512 and 1024 tokens with identical batch size and software, followed by blinded human review of a stratified sample. That establishes whether the longer budget itself helps and gives a calibration set for the reward model.
+The highest-value next experiment is not simply continuing PPO for more episodes. It is blinded human review of a stratified sample from the final 50-example curation set, plus a controlled token-budget evaluation at 512, 768, and 1024 tokens with identical batch size and software. That establishes whether the longer budget itself helps and gives a calibration set for the reward model.
 
 The second step is to retrain the reward model with hard negatives from the current audit, especially repeated loops, prompt restatements, irrelevant continuations, fabricated citations, and unsafe scientific answers. The revised judge should be validated specifically on those cases before it is used for another policy update.
 
