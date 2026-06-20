@@ -157,7 +157,10 @@ def run_trl_reward(cfg: dict[str, Any], *, config_path: str | Path | None = None
         eval_dataset = eval_dataset.select(range(min(len(eval_dataset), int(cfg["data"]["max_eval_samples"]))))
 
     model = load_sequence_classification_model(str(cfg["model"]["sft_model_path"]), tokenizer, cfg["model"])
-    initialization = initialize_reward_head(model)
+    if bool(cfg["model"].get("initialize_reward_head", True)):
+        initialization = initialize_reward_head(model)
+    else:
+        initialization = {"skipped": True, "reason": "model.initialize_reward_head=false"}
     write_json(initialization, output_dir / "reward_head_initialization.json")
 
     lora_cfg = dict(cfg.get("lora", {}))

@@ -8,6 +8,7 @@ experiment:
 
 model:
   sft_model_path: outputs/trl/qwen25_05b_helpsteer3_sft_a100_full/final_merged_model
+  initialize_reward_head: true
   dtype: bfloat16
   trust_remote_code: false
   attn_implementation: sdpa
