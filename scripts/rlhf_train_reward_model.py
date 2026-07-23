@@ -5,10 +5,16 @@ from _bootstrap import ensure_repo_root_on_path
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train Qwen reward model on HelpSteer3 preference pairs.")
+    parser = argparse.ArgumentParser(
+        description="Train Qwen reward model on HelpSteer3 preference pairs."
+    )
     parser.add_argument("--config", required=True)
     parser.add_argument("--output-dir", default=None)
-    parser.add_argument("--resume-from-checkpoint", default=None, help="Optional reward checkpoint to continue training from.")
+    parser.add_argument(
+        "--resume-from-checkpoint",
+        default=None,
+        help="Optional reward checkpoint to continue training from.",
+    )
     parser.add_argument(
         "--clear-existing-metrics",
         action="store_true",

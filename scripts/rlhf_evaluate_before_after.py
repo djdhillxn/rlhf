@@ -5,7 +5,9 @@ from _bootstrap import ensure_repo_root_on_path
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Evaluate base vs PPO-aligned Qwen responses.")
+    parser = argparse.ArgumentParser(
+        description="Evaluate base vs PPO-aligned Qwen responses."
+    )
     parser.add_argument("--config", required=True)
     parser.add_argument("--output-dir", default=None)
     args = parser.parse_args()

@@ -1,5 +1,4 @@
 from pathlib import Path
-from typing import Any
 
 import torch
 from tqdm.auto import tqdm
@@ -13,14 +12,14 @@ from .reward_model import RewardModel
 from .rollout import GenerationConfig, collect_lm_rollouts
 
 
-def _device_from_cfg(cfg: dict[str, Any]) -> torch.device:
+def _device_from_cfg(cfg):
     name = str(cfg.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
     if name == "cuda" and not torch.cuda.is_available():
         name = "cpu"
     return torch.device(name)
 
 
-def _resolve_num_prompts(value: Any) -> int | None:
+def _resolve_num_prompts(value):
     """Resolve eval.num_prompts; accepts integers or all/full/null/-1 for complete split."""
     if value is None:
         return None
@@ -32,11 +31,13 @@ def _resolve_num_prompts(value: Any) -> int | None:
     try:
         n = int(value)
     except (TypeError, ValueError) as exc:
-        raise ValueError(f"eval.num_prompts must be an integer or 'all', got {value!r}") from exc
+        raise ValueError(
+            f"eval.num_prompts must be an integer or 'all', got {value!r}"
+        ) from exc
     return None if n <= 0 else n
 
 
-def _load_policy_or_base(cfg, checkpoint_dir: str | None, device: torch.device):
+def _load_policy_or_base(cfg, checkpoint_dir, device):
     model_name = str(cfg.model.get("name", "Qwen/Qwen2.5-0.5B-Instruct"))
     if checkpoint_dir:
         policy = TokenPolicyWithValue.load_rlhf_pretrained(
@@ -44,7 +45,11 @@ def _load_policy_or_base(cfg, checkpoint_dir: str | None, device: torch.device):
             base_model_name=model_name,
             torch_dtype=str(cfg.model.get("torch_dtype", "auto")),
             device_map=cfg.model.get("policy_device_map"),
-            load_in_4bit=bool(cfg.model.get("policy_load_in_4bit", cfg.model.get("load_in_4bit", False))),
+            load_in_4bit=bool(
+                cfg.model.get(
+                    "policy_load_in_4bit", cfg.model.get("load_in_4bit", False)
+                )
+            ),
             load_in_8bit=bool(cfg.model.get("policy_load_in_8bit", False)),
             trust_remote_code=bool(cfg.model.get("trust_remote_code", False)),
         )
@@ -53,7 +58,11 @@ def _load_policy_or_base(cfg, checkpoint_dir: str | None, device: torch.device):
             model_name,
             torch_dtype=str(cfg.model.get("torch_dtype", "auto")),
             device_map=cfg.model.get("policy_device_map"),
-            load_in_4bit=bool(cfg.model.get("policy_load_in_4bit", cfg.model.get("load_in_4bit", False))),
+            load_in_4bit=bool(
+                cfg.model.get(
+                    "policy_load_in_4bit", cfg.model.get("load_in_4bit", False)
+                )
+            ),
             load_in_8bit=bool(cfg.model.get("policy_load_in_8bit", False)),
             lora=None,
             gradient_checkpointing=False,
@@ -65,28 +74,39 @@ def _load_policy_or_base(cfg, checkpoint_dir: str | None, device: torch.device):
     return policy
 
 
-def _comparison_cfg(cfg) -> dict[str, Any]:
+def _comparison_cfg(cfg):
     """Return backward-compatible before/after comparison settings.
 
     Old configs only had eval.policy_checkpoint_dir, and compared base Qwen vs PPO.
     New configs may set eval.baseline_checkpoint_dir and labels, letting us compare
     base-vs-SFT, base-vs-PPO, or SFT-vs-PPO with the same evaluator.
     """
-    candidate_checkpoint = cfg.eval.get("candidate_checkpoint_dir", cfg.eval.get("policy_checkpoint_dir"))
+    candidate_checkpoint = cfg.eval.get(
+        "candidate_checkpoint_dir", cfg.eval.get("policy_checkpoint_dir")
+    )
     baseline_checkpoint = cfg.eval.get("baseline_checkpoint_dir", None)
     baseline_label = str(cfg.eval.get("baseline_label", "base"))
-    candidate_label = str(cfg.eval.get("candidate_label", cfg.eval.get("policy_label", "ppo")))
+    candidate_label = str(
+        cfg.eval.get("candidate_label", cfg.eval.get("policy_label", "ppo"))
+    )
     return {
-        "baseline_checkpoint_dir": None if baseline_checkpoint in {None, "", "none", "null"} else str(baseline_checkpoint),
-        "candidate_checkpoint_dir": None if candidate_checkpoint in {None, "", "none", "null"} else str(candidate_checkpoint),
+        "baseline_checkpoint_dir": None
+        if baseline_checkpoint in {None, "", "none", "null"}
+        else str(baseline_checkpoint),
+        "candidate_checkpoint_dir": None
+        if candidate_checkpoint in {None, "", "none", "null"}
+        else str(candidate_checkpoint),
         "baseline_label": baseline_label,
         "candidate_label": candidate_label,
     }
 
 
-def run_before_after_eval(config_path: str | Path, *, output_dir: str | Path | None = None) -> Path:
+def run_before_after_eval(config_path, *, output_dir=None):
     cfg = load_config(config_path)
-    output_dir = Path(output_dir or cfg.eval.get("output_dir", "outputs/rlhf/qwen25_05b_helpsteer3_eval"))
+    output_dir = Path(
+        output_dir
+        or cfg.eval.get("output_dir", "outputs/rlhf/qwen25_05b_helpsteer3_eval")
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "plots").mkdir(exist_ok=True)
     save_config(cfg, output_dir / "config_resolved.yaml")
@@ -101,7 +121,9 @@ def run_before_after_eval(config_path: str | Path, *, output_dir: str | Path | N
     from transformers import AutoTokenizer
 
     model_name = str(cfg.model.get("name", "Qwen/Qwen2.5-0.5B-Instruct"))
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=bool(cfg.model.get("trust_remote_code", False)))
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_name, trust_remote_code=bool(cfg.model.get("trust_remote_code", False))
+    )
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
     device = _device_from_cfg(cfg.eval)
@@ -117,11 +139,17 @@ def run_before_after_eval(config_path: str | Path, *, output_dir: str | Path | N
     prompts = [r["prompt"] for r in records]
     cmp_cfg = _comparison_cfg(cfg)
 
-    baseline_policy = _load_policy_or_base(cfg, cmp_cfg["baseline_checkpoint_dir"], device)
-    candidate_policy = _load_policy_or_base(cfg, cmp_cfg["candidate_checkpoint_dir"], device)
+    baseline_policy = _load_policy_or_base(
+        cfg, cmp_cfg["baseline_checkpoint_dir"], device
+    )
+    candidate_policy = _load_policy_or_base(
+        cfg, cmp_cfg["candidate_checkpoint_dir"], device
+    )
     reference = FrozenCausalLM.from_model_name(
         model_name,
-        torch_dtype=str(cfg.model.get("ref_torch_dtype", cfg.model.get("torch_dtype", "auto"))),
+        torch_dtype=str(
+            cfg.model.get("ref_torch_dtype", cfg.model.get("torch_dtype", "auto"))
+        ),
         device_map=cfg.model.get("ref_device_map"),
         load_in_4bit=bool(cfg.model.get("ref_load_in_4bit", True)),
         load_in_8bit=bool(cfg.model.get("ref_load_in_8bit", False)),
@@ -133,7 +161,9 @@ def run_before_after_eval(config_path: str | Path, *, output_dir: str | Path | N
     reward_model = RewardModel.load_rlhf_pretrained(
         str(cfg.reward_model.get("checkpoint_dir")),
         base_model_name=model_name,
-        torch_dtype=str(cfg.reward_model.get("torch_dtype", cfg.model.get("torch_dtype", "auto"))),
+        torch_dtype=str(
+            cfg.reward_model.get("torch_dtype", cfg.model.get("torch_dtype", "auto"))
+        ),
         device_map=cfg.reward_model.get("device_map"),
         load_in_4bit=bool(cfg.reward_model.get("load_in_4bit", True)),
         load_in_8bit=bool(cfg.reward_model.get("load_in_8bit", False)),
@@ -147,7 +177,7 @@ def run_before_after_eval(config_path: str | Path, *, output_dir: str | Path | N
 
     generation = GenerationConfig(**dict(cfg.get("generation", {})))
     batch_size = int(cfg.eval.get("batch_size", 4))
-    rows: list[dict[str, Any]] = []
+    rows = []
 
     for start in tqdm(range(0, len(prompts), batch_size), desc="eval batches"):
         batch_prompts = prompts[start : start + batch_size]
@@ -179,7 +209,11 @@ def run_before_after_eval(config_path: str | Path, *, output_dir: str | Path | N
         for i, prompt in enumerate(batch_prompts):
             baseline_score = float(baseline.scores[i].item())
             candidate_score = float(candidate.scores[i].item())
-            winner = cmp_cfg["candidate_label"] if candidate_score > baseline_score else cmp_cfg["baseline_label"]
+            winner = (
+                cmp_cfg["candidate_label"]
+                if candidate_score > baseline_score
+                else cmp_cfg["baseline_label"]
+            )
             baseline_response = (baseline.responses or [""])[i]
             candidate_response = (candidate.responses or [""])[i]
             row = {
@@ -220,16 +254,19 @@ def run_before_after_eval(config_path: str | Path, *, output_dir: str | Path | N
     _write_eval_summary(rows, output_dir)
     _write_eval_plots(rows, output_dir / "plots")
     _write_excel_if_available(rows, output_dir / "before_after_samples.xlsx")
-    _write_markdown_table(rows[: int(cfg.eval.get("num_demo_rows", 12))], output_dir / "before_after_demo.md")
+    _write_markdown_table(
+        rows[: int(cfg.eval.get("num_demo_rows", 12))],
+        output_dir / "before_after_demo.md",
+    )
     finalize_experiment(output_dir)
     return output_dir
 
 
-def _safe_len(text: Any) -> int:
+def _safe_len(text):
     return len(str(text or ""))
 
 
-def _numeric(values: list[Any]) -> list[float]:
+def _numeric(values):
     out = []
     for v in values:
         try:
@@ -239,7 +276,7 @@ def _numeric(values: list[Any]) -> list[float]:
     return out
 
 
-def _stats(values: list[float | int]) -> dict[str, float]:
+def _stats(values):
     import statistics
 
     vals = [float(v) for v in values]
@@ -253,35 +290,83 @@ def _stats(values: list[float | int]) -> dict[str, float]:
     }
 
 
-def _write_eval_summary(rows: list[dict[str, Any]], output_dir: str | Path) -> None:
+def _write_eval_summary(rows, output_dir):
     """Write compact report-friendly aggregate metrics for pairwise eval."""
     output_dir = Path(output_dir)
     if not rows:
         write_json({"num_examples": 0}, output_dir / "eval_summary.json")
         return
-    winner_counts: dict[str, int] = {}
-    domain_counts: dict[str, dict[str, int]] = {}
-    reward_deltas: list[float] = []
-    baseline_rewards: list[float] = []
-    candidate_rewards: list[float] = []
-    baseline_chars: list[int] = []
-    candidate_chars: list[int] = []
-    baseline_tokens: list[int] = []
-    candidate_tokens: list[int] = []
+    winner_counts = {}
+    domain_counts = {}
+    reward_deltas = []
+    baseline_rewards = []
+    candidate_rewards = []
+    baseline_chars = []
+    candidate_chars = []
+    baseline_tokens = []
+    candidate_tokens = []
     baseline_label = str(rows[0].get("baseline_label", "base"))
     candidate_label = str(rows[0].get("candidate_label", "candidate"))
     for row in rows:
         winner = str(row.get("winner", "unknown"))
         domain = str(row.get("domain", "unknown"))
         winner_counts[winner] = winner_counts.get(winner, 0) + 1
-        domain_counts.setdefault(domain, {})[winner] = domain_counts.setdefault(domain, {}).get(winner, 0) + 1
+        domain_counts.setdefault(domain, {})[winner] = (
+            domain_counts.setdefault(domain, {}).get(winner, 0) + 1
+        )
         reward_deltas.extend(_numeric([row.get("reward_delta", 0.0)]))
-        baseline_rewards.extend(_numeric([row.get("baseline_reward", row.get("base_reward", 0.0))]))
-        candidate_rewards.extend(_numeric([row.get("candidate_reward", row.get("ppo_reward", 0.0))]))
-        baseline_chars.append(int(row.get("baseline_response_chars", _safe_len(row.get("baseline_response", row.get("base_response", ""))))))
-        candidate_chars.append(int(row.get("candidate_response_chars", _safe_len(row.get("candidate_response", row.get("ppo_response", ""))))))
-        baseline_tokens.extend([int(x) for x in _numeric([row.get("baseline_response_tokens", row.get("base_response_tokens", 0))])])
-        candidate_tokens.extend([int(x) for x in _numeric([row.get("candidate_response_tokens", row.get("ppo_response_tokens", 0))])])
+        baseline_rewards.extend(
+            _numeric([row.get("baseline_reward", row.get("base_reward", 0.0))])
+        )
+        candidate_rewards.extend(
+            _numeric([row.get("candidate_reward", row.get("ppo_reward", 0.0))])
+        )
+        baseline_chars.append(
+            int(
+                row.get(
+                    "baseline_response_chars",
+                    _safe_len(
+                        row.get("baseline_response", row.get("base_response", ""))
+                    ),
+                )
+            )
+        )
+        candidate_chars.append(
+            int(
+                row.get(
+                    "candidate_response_chars",
+                    _safe_len(
+                        row.get("candidate_response", row.get("ppo_response", ""))
+                    ),
+                )
+            )
+        )
+        baseline_tokens.extend(
+            [
+                int(x)
+                for x in _numeric(
+                    [
+                        row.get(
+                            "baseline_response_tokens",
+                            row.get("base_response_tokens", 0),
+                        )
+                    ]
+                )
+            ]
+        )
+        candidate_tokens.extend(
+            [
+                int(x)
+                for x in _numeric(
+                    [
+                        row.get(
+                            "candidate_response_tokens",
+                            row.get("ppo_response_tokens", 0),
+                        )
+                    ]
+                )
+            ]
+        )
 
     summary = {
         "num_examples": len(rows),
@@ -297,14 +382,18 @@ def _write_eval_summary(rows: list[dict[str, Any]], output_dir: str | Path) -> N
         "candidate_response_chars": _stats(candidate_chars),
         "baseline_response_tokens": _stats(baseline_tokens),
         "candidate_response_tokens": _stats(candidate_tokens),
-        "candidate_win_rate": float(winner_counts.get(candidate_label, 0) / max(len(rows), 1)),
+        "candidate_win_rate": float(
+            winner_counts.get(candidate_label, 0) / max(len(rows), 1)
+        ),
         # Legacy key expected by older notebooks when candidate_label == ppo.
-        "ppo_win_rate": float(winner_counts.get(candidate_label, 0) / max(len(rows), 1)),
+        "ppo_win_rate": float(
+            winner_counts.get(candidate_label, 0) / max(len(rows), 1)
+        ),
     }
     write_json(summary, output_dir / "eval_summary.json")
 
 
-def _write_eval_plots(rows: list[dict[str, Any]], output_dir: str | Path) -> None:
+def _write_eval_plots(rows, output_dir):
     """Write lightweight reward/length distribution plots for reports."""
     if not rows:
         return
@@ -334,9 +423,17 @@ def _write_eval_plots(rows: list[dict[str, Any]], output_dir: str | Path) -> Non
         fig.savefig(output_dir / "eval_reward_delta_hist.png", dpi=160)
         plt.close(fig)
 
-    baseline_rewards = _numeric([r.get("baseline_reward", r.get("base_reward")) for r in rows])
-    candidate_rewards = _numeric([r.get("candidate_reward", r.get("ppo_reward")) for r in rows])
-    if baseline_rewards and candidate_rewards and len(baseline_rewards) == len(candidate_rewards):
+    baseline_rewards = _numeric(
+        [r.get("baseline_reward", r.get("base_reward")) for r in rows]
+    )
+    candidate_rewards = _numeric(
+        [r.get("candidate_reward", r.get("ppo_reward")) for r in rows]
+    )
+    if (
+        baseline_rewards
+        and candidate_rewards
+        and len(baseline_rewards) == len(candidate_rewards)
+    ):
         fig = plt.figure(figsize=(5, 5))
         ax = fig.add_subplot(111)
         ax.scatter(baseline_rewards, candidate_rewards, s=8, alpha=0.5)
@@ -375,7 +472,10 @@ def _write_eval_plots(rows: list[dict[str, Any]], output_dir: str | Path) -> Non
         for domain in domains:
             subset = [r for r in rows if str(r.get("domain", "unknown")) == domain]
             counts.append(len(subset))
-            candidate_rates.append(sum(1 for r in subset if r.get("winner") == candidate_label) / max(len(subset), 1))
+            candidate_rates.append(
+                sum(1 for r in subset if r.get("winner") == candidate_label)
+                / max(len(subset), 1)
+            )
         fig = plt.figure(figsize=(7, 4))
         ax = fig.add_subplot(111)
         ax.bar(domains, candidate_rates)
@@ -383,13 +483,20 @@ def _write_eval_plots(rows: list[dict[str, Any]], output_dir: str | Path) -> Non
         ax.set_ylabel(f"{candidate_label} win rate")
         ax.set_title("Win rate by domain")
         for idx, count in enumerate(counts):
-            ax.text(idx, candidate_rates[idx], str(count), ha="center", va="bottom", fontsize=8)
+            ax.text(
+                idx,
+                candidate_rates[idx],
+                str(count),
+                ha="center",
+                va="bottom",
+                fontsize=8,
+            )
         fig.tight_layout()
         fig.savefig(output_dir / "eval_candidate_win_rate_by_domain.png", dpi=160)
         plt.close(fig)
 
 
-def _write_excel_if_available(rows: list[dict[str, Any]], path: str | Path) -> None:
+def _write_excel_if_available(rows, path):
     """Write an XLSX copy when pandas/openpyxl are available; silently skip otherwise."""
     try:
         import pandas as pd
@@ -401,12 +508,12 @@ def _write_excel_if_available(rows: list[dict[str, Any]], path: str | Path) -> N
         return
 
 
-def _compact(text: Any, n: int = 900) -> str:
+def _compact(text, n=900):
     s = str(text or "").replace("\n", "<br>")
     return s if len(s) <= n else s[:n] + "..."
 
 
-def _write_markdown_table(rows: list[dict[str, Any]], path: str | Path) -> None:
+def _write_markdown_table(rows, path):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     if not rows:
@@ -430,8 +537,12 @@ def _write_markdown_table(rows: list[dict[str, Any]], path: str | Path) -> None:
                 winner=row.get("winner", ""),
                 delta=float(row.get("reward_delta", 0.0)),
                 prompt=_compact(row.get("prompt", ""), 260),
-                base=_compact(row.get("baseline_response", row.get("base_response", "")), 420),
-                cand=_compact(row.get("candidate_response", row.get("ppo_response", "")), 420),
+                base=_compact(
+                    row.get("baseline_response", row.get("base_response", "")), 420
+                ),
+                cand=_compact(
+                    row.get("candidate_response", row.get("ppo_response", "")), 420
+                ),
             )
         )
     path.write_text("".join(lines), encoding="utf-8")

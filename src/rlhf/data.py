@@ -1,10 +1,13 @@
 import json
 import random
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Sequence
 
-from .formatting import normalize_messages, render_prompt, render_prompt_with_response, strip_trailing_assistant
+from .formatting import (
+    normalize_messages,
+    render_prompt,
+    render_prompt_with_response,
+    strip_trailing_assistant,
+)
 
 
 PREFERENCE_SCORE_KEYS = (
@@ -14,54 +17,82 @@ PREFERENCE_SCORE_KEYS = (
     "preference",
     "score",
 )
-RESPONSE1_KEYS = ("response1", "response_1", "answer1", "answer_1", "output1", "output_1")
-RESPONSE2_KEYS = ("response2", "response_2", "answer2", "answer_2", "output2", "output_2")
+RESPONSE1_KEYS = (
+    "response1",
+    "response_1",
+    "answer1",
+    "answer_1",
+    "output1",
+    "output_1",
+)
+RESPONSE2_KEYS = (
+    "response2",
+    "response_2",
+    "answer2",
+    "answer_2",
+    "output2",
+    "output_2",
+)
 CONTEXT_KEYS = ("context", "messages", "conversation", "conversations", "prompt")
 
 
-@dataclass(frozen=True)
 class PreferencePair:
-    prompt: str
-    chosen: str
-    rejected: str
-    chosen_text: str
-    rejected_text: str
-    margin: float
-    domain: str = "unknown"
-    language: str = "unknown"
+    def __init__(
+        self,
+        prompt,
+        chosen,
+        rejected,
+        chosen_text,
+        rejected_text,
+        margin,
+        domain="unknown",
+        language="unknown",
+    ):
+        self.prompt = prompt
+        self.chosen = chosen
+        self.rejected = rejected
+        self.chosen_text = chosen_text
+        self.rejected_text = rejected_text
+        self.margin = margin
+        self.domain = domain
+        self.language = language
 
 
-def _first_present(example: dict[str, Any], keys: Sequence[str]) -> Any:
+def _first_present(example, keys):
     for key in keys:
         if key in example and example[key] is not None:
             return example[key]
     return None
 
 
-def _to_float(value: Any) -> float | None:
+def _to_float(value):
     try:
         return float(value)
     except (TypeError, ValueError):
         return None
 
 
-def load_helpsteer3_preference(split: str = "train", *, streaming: bool = False):
+def load_helpsteer3_preference(split="train", *, streaming=False):
     """Load HelpSteer3 preference data with robust config fallbacks."""
     try:
         from datasets import load_dataset
     except ImportError as exc:
-        raise ImportError("Install RLHF extras first: pip install -r requirements-rlhf.txt") from exc
+        raise ImportError(
+            "Install RLHF extras first: pip install -r requirements-rlhf.txt"
+        ) from exc
 
-    errors: list[str] = []
+    errors = []
     for args in (("nvidia/HelpSteer3", "preference"), ("nvidia/HelpSteer3",)):
         try:
             return load_dataset(*args, split=split, streaming=streaming)
         except Exception as exc:  # pragma: no cover - depends on hub metadata
             errors.append(f"load_dataset{args!r}: {exc}")
-    raise RuntimeError("Could not load HelpSteer3 preference split. Tried:\n" + "\n".join(errors))
+    raise RuntimeError(
+        "Could not load HelpSteer3 preference split. Tried:\n" + "\n".join(errors)
+    )
 
 
-def example_to_preference_pair(example: dict[str, Any], tokenizer: Any) -> PreferencePair | None:
+def example_to_preference_pair(example, tokenizer):
     score = _to_float(_first_present(example, PREFERENCE_SCORE_KEYS))
     if score is None or score == 0.0:
         return None
@@ -97,14 +128,14 @@ def example_to_preference_pair(example: dict[str, Any], tokenizer: Any) -> Prefe
 
 
 def build_preference_pairs(
-    raw_dataset: Iterable[dict[str, Any]],
-    tokenizer: Any,
+    raw_dataset,
+    tokenizer,
     *,
-    max_samples: int | None = None,
-    shuffle: bool = False,
-    seed: int = 0,
-) -> list[PreferencePair]:
-    pairs: list[PreferencePair] = []
+    max_samples=None,
+    shuffle=False,
+    seed=0,
+):
+    pairs = []
     for ex in raw_dataset:
         pair = example_to_preference_pair(dict(ex), tokenizer)
         if pair is not None:
@@ -118,14 +149,14 @@ def build_preference_pairs(
 
 
 def build_prompt_records(
-    raw_dataset: Iterable[dict[str, Any]],
-    tokenizer: Any,
+    raw_dataset,
+    tokenizer,
     *,
-    max_samples: int | None = None,
-    seed: int = 0,
-    shuffle: bool = True,
-) -> list[dict[str, str]]:
-    records: list[dict[str, str]] = []
+    max_samples=None,
+    seed=0,
+    shuffle=True,
+):
+    records = []
     for ex in raw_dataset:
         context = _first_present(dict(ex), CONTEXT_KEYS)
         messages = strip_trailing_assistant(normalize_messages(context))
@@ -146,7 +177,7 @@ def build_prompt_records(
     return records
 
 
-def save_jsonl(records: Iterable[dict[str, Any]], path: str | Path) -> None:
+def save_jsonl(records, path):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
@@ -154,5 +185,5 @@ def save_jsonl(records: Iterable[dict[str, Any]], path: str | Path) -> None:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-def preference_pairs_to_dicts(pairs: Sequence[PreferencePair]) -> list[dict[str, Any]]:
+def preference_pairs_to_dicts(pairs):
     return [pair.__dict__.copy() for pair in pairs]

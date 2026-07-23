@@ -8,7 +8,7 @@ from pathlib import Path
 from _bootstrap import ensure_repo_root_on_path
 
 
-def _cell(value) -> str:
+def _cell(value):
     if isinstance(value, (dict, list)):
         text = json.dumps(value, sort_keys=True)
     else:
@@ -16,7 +16,7 @@ def _cell(value) -> str:
     return text.replace("|", "\\|").replace("\n", " ")
 
 
-def main() -> None:
+def main():
     parser = argparse.ArgumentParser(
         description="Compare two output directories, manifests, or YAML configuration files."
     )

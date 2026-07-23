@@ -1,9 +1,6 @@
-from __future__ import annotations
-
 import json
 import math
 from pathlib import Path
-from typing import Any
 
 import torch
 from torch import nn
@@ -11,8 +8,8 @@ from torch import nn
 from .trl_common import resize_embeddings_if_needed, resolve_dtype
 
 
-def model_load_kwargs(cfg: dict[str, Any]) -> dict[str, Any]:
-    kwargs: dict[str, Any] = {
+def model_load_kwargs(cfg):
+    kwargs = {
         "trust_remote_code": bool(cfg.get("trust_remote_code", False)),
     }
     dtype = resolve_dtype(cfg.get("dtype", cfg.get("torch_dtype", "bfloat16")))
@@ -23,17 +20,19 @@ def model_load_kwargs(cfg: dict[str, Any]) -> dict[str, Any]:
     return kwargs
 
 
-def disable_dropout_modules(model: Any) -> None:
+def disable_dropout_modules(model):
     """Make PPO log-probability ratios reproducible even if a backbone defines dropout."""
     for module in model.modules():
         if isinstance(module, nn.Dropout):
             module.p = 0.0
 
 
-def load_causal_model(model_name_or_path: str, tokenizer: Any, cfg: dict[str, Any]):
+def load_causal_model(model_name_or_path, tokenizer, cfg):
     from transformers import AutoModelForCausalLM
 
-    model = AutoModelForCausalLM.from_pretrained(model_name_or_path, **model_load_kwargs(cfg))
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name_or_path, **model_load_kwargs(cfg)
+    )
     resize_embeddings_if_needed(model, tokenizer)
     disable_dropout_modules(model)
     if hasattr(model.config, "use_cache"):
@@ -43,7 +42,7 @@ def load_causal_model(model_name_or_path: str, tokenizer: Any, cfg: dict[str, An
     return model
 
 
-def load_sequence_classification_model(model_name_or_path: str, tokenizer: Any, cfg: dict[str, Any]):
+def load_sequence_classification_model(model_name_or_path, tokenizer, cfg):
     from transformers import AutoModelForSequenceClassification
 
     model = AutoModelForSequenceClassification.from_pretrained(
@@ -58,7 +57,7 @@ def load_sequence_classification_model(model_name_or_path: str, tokenizer: Any, 
     return model
 
 
-def configure_ppo_sampling_distribution(model: Any, *, temperature: float) -> dict[str, Any]:
+def configure_ppo_sampling_distribution(model, *, temperature):
     """Remove model-card decoding heuristics that invalidate PPO behavior ratios."""
     generation_config = model.generation_config
     neutral_values = {
@@ -81,7 +80,7 @@ def configure_ppo_sampling_distribution(model: Any, *, temperature: float) -> di
         "forced_eos_token_id": None,
         "diversity_penalty": 0.0,
     }
-    applied: dict[str, Any] = {}
+    applied = {}
     for name, value in neutral_values.items():
         if hasattr(generation_config, name):
             setattr(generation_config, name, value)
@@ -89,7 +88,7 @@ def configure_ppo_sampling_distribution(model: Any, *, temperature: float) -> di
     return applied
 
 
-def initialize_reward_head(model: Any) -> dict[str, float]:
+def initialize_reward_head(model):
     """Apply the scalar-head initialization used by the N+ reference implementation."""
     score = getattr(model, "score", None)
     if not isinstance(score, nn.Linear):
@@ -105,17 +104,19 @@ def initialize_reward_head(model: Any) -> dict[str, float]:
 class OffsetScore(nn.Module):
     """Subtract a fixed calibration offset while retaining the original score head."""
 
-    def __init__(self, base: nn.Module, offset: float) -> None:
+    def __init__(self, base, offset):
         super().__init__()
         self.base = base
-        self.register_buffer("offset", torch.tensor(float(offset), dtype=torch.float32), persistent=False)
+        self.register_buffer(
+            "offset", torch.tensor(float(offset), dtype=torch.float32), persistent=False
+        )
 
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+    def forward(self, hidden_states):
         scores = self.base(hidden_states)
         return scores - self.offset.to(device=scores.device, dtype=scores.dtype)
 
 
-def apply_reward_center(model: Any, offset: float) -> Any:
+def apply_reward_center(model, offset):
     score = getattr(model, "score", None)
     if score is None:
         raise AttributeError("Reward/value model has no `score` head.")
@@ -126,7 +127,7 @@ def apply_reward_center(model: Any, offset: float) -> Any:
     return model
 
 
-def remove_reward_center(model: Any) -> float:
+def remove_reward_center(model):
     score = getattr(model, "score", None)
     if not isinstance(score, OffsetScore):
         return 0.0
@@ -135,7 +136,7 @@ def remove_reward_center(model: Any) -> float:
     return offset
 
 
-def save_reward_center(offset: float, path: str | Path, *, num_examples: int, raw_std: float) -> None:
+def save_reward_center(offset, path, *, num_examples, raw_std):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -155,14 +156,14 @@ def save_reward_center(offset: float, path: str | Path, *, num_examples: int, ra
     )
 
 
-def load_reward_center(path: str | Path | None) -> float:
+def load_reward_center(path):
     if not path:
         return 0.0
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     return float(payload.get("reward_offset", 0.0))
 
 
-def merge_peft_model(model: Any, output_dir: str | Path, tokenizer: Any) -> Path:
+def merge_peft_model(model, output_dir, tokenizer):
     from peft import PeftModel
 
     if not isinstance(model, PeftModel):
@@ -177,24 +178,30 @@ def merge_peft_model(model: Any, output_dir: str | Path, tokenizer: Any) -> Path
 
 @torch.inference_mode()
 def score_tokenized_sequences(
-    model: Any,
-    records: list[list[int]],
+    model,
+    records,
     *,
-    pad_token_id: int,
-    device: torch.device,
-    batch_size: int = 16,
-) -> torch.Tensor:
-    scores: list[torch.Tensor] = []
+    pad_token_id,
+    device,
+    batch_size=16,
+):
+    scores = []
     model.eval()
     for start in range(0, len(records), batch_size):
         rows = records[start : start + batch_size]
         width = max(len(row) for row in rows)
-        input_ids = torch.full((len(rows), width), pad_token_id, dtype=torch.long, device=device)
-        attention_mask = torch.zeros((len(rows), width), dtype=torch.long, device=device)
+        input_ids = torch.full(
+            (len(rows), width), pad_token_id, dtype=torch.long, device=device
+        )
+        attention_mask = torch.zeros(
+            (len(rows), width), dtype=torch.long, device=device
+        )
         for idx, row in enumerate(rows):
             length = len(row)
             input_ids[idx, :length] = torch.tensor(row, dtype=torch.long, device=device)
             attention_mask[idx, :length] = 1
-        output = model(input_ids=input_ids, attention_mask=attention_mask, use_cache=False)
+        output = model(
+            input_ids=input_ids, attention_mask=attention_mask, use_cache=False
+        )
         scores.append(output.logits.squeeze(-1).float().cpu())
     return torch.cat(scores) if scores else torch.empty(0)

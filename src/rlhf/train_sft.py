@@ -1,27 +1,37 @@
 from pathlib import Path
-from typing import Any
 import time
 
 import torch
-import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 from tqdm.auto import tqdm
 
 from .config import load_config, save_config
-from .data import build_preference_pairs, load_helpsteer3_preference, preference_pairs_to_dicts, save_jsonl
+from .data import (
+    build_preference_pairs,
+    load_helpsteer3_preference,
+    preference_pairs_to_dicts,
+    save_jsonl,
+)
 from .experiment import finalize_experiment, initialize_experiment
 from .lm_policy import TokenPolicyWithValue
-from .metrics import append_jsonl, collect_run_metadata, jsonl_to_csv, read_jsonl, save_metric_plots, write_json
+from .metrics import (
+    append_jsonl,
+    collect_run_metadata,
+    jsonl_to_csv,
+    read_jsonl,
+    save_metric_plots,
+    write_json,
+)
 
 
 class SFTDataset(Dataset):
     def __init__(self, pairs):
         self.pairs = list(pairs)
 
-    def __len__(self) -> int:
+    def __len__(self):
         return len(self.pairs)
 
-    def __getitem__(self, idx: int):
+    def __getitem__(self, idx):
         pair = self.pairs[idx]
         return {
             "prompt": pair.prompt,
@@ -32,7 +42,7 @@ class SFTDataset(Dataset):
 
 
 class SFTCollator:
-    def __init__(self, tokenizer, max_length: int = 1024):
+    def __init__(self, tokenizer, max_length=1024):
         self.tokenizer = tokenizer
         self.max_length = int(max_length)
 
@@ -76,28 +86,33 @@ class SFTCollator:
         }
 
 
-def _device_from_cfg(cfg: dict[str, Any]) -> torch.device:
+def _device_from_cfg(cfg):
     name = str(cfg.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
     if name == "cuda" and not torch.cuda.is_available():
         name = "cpu"
     return torch.device(name)
 
 
-def _move_batch(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
-    return {k: (v.to(device, non_blocking=True) if torch.is_tensor(v) else v) for k, v in batch.items()}
+def _move_batch(batch, device):
+    return {
+        k: (v.to(device, non_blocking=True) if torch.is_tensor(v) else v)
+        for k, v in batch.items()
+    }
 
 
-def _cuda_memory() -> dict[str, float]:
+def _cuda_memory():
     if not torch.cuda.is_available():
         return {}
     return {
         "cuda_memory_allocated_gb": round(torch.cuda.memory_allocated() / (1024**3), 4),
         "cuda_memory_reserved_gb": round(torch.cuda.memory_reserved() / (1024**3), 4),
-        "cuda_max_memory_allocated_gb": round(torch.cuda.max_memory_allocated() / (1024**3), 4),
+        "cuda_max_memory_allocated_gb": round(
+            torch.cuda.max_memory_allocated() / (1024**3), 4
+        ),
     }
 
 
-def _refresh_sft_artifacts(output_dir: Path) -> list[str]:
+def _refresh_sft_artifacts(output_dir):
     jsonl_to_csv(output_dir / "train_metrics.jsonl", output_dir / "train_metrics.csv")
     rows = read_jsonl(output_dir / "train_metrics.jsonl")
     return save_metric_plots(
@@ -109,9 +124,12 @@ def _refresh_sft_artifacts(output_dir: Path) -> list[str]:
     )
 
 
-def run_sft_training(config_path: str | Path, *, output_dir: str | Path | None = None) -> Path:
+def run_sft_training(config_path, *, output_dir=None):
     cfg = load_config(config_path)
-    output_dir = Path(output_dir or cfg.train.get("output_dir", "outputs/rlhf/qwen25_05b_helpsteer3_sft"))
+    output_dir = Path(
+        output_dir
+        or cfg.train.get("output_dir", "outputs/rlhf/qwen25_05b_helpsteer3_sft")
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "plots").mkdir(exist_ok=True)
     save_config(cfg, output_dir / "config_resolved.yaml")
@@ -126,7 +144,9 @@ def run_sft_training(config_path: str | Path, *, output_dir: str | Path | None =
     from transformers import AutoTokenizer, get_cosine_schedule_with_warmup
 
     model_name = str(cfg.model.get("name", "Qwen/Qwen2.5-0.5B-Instruct"))
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=bool(cfg.model.get("trust_remote_code", False)))
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_name, trust_remote_code=bool(cfg.model.get("trust_remote_code", False))
+    )
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -145,7 +165,10 @@ def run_sft_training(config_path: str | Path, *, output_dir: str | Path | None =
     )
     if not pairs:
         raise RuntimeError("No SFT training pairs were built from HelpSteer3.")
-    save_jsonl(preference_pairs_to_dicts(pairs[: min(len(pairs), 1000)]), output_dir / "sft_pairs_preview.jsonl")
+    save_jsonl(
+        preference_pairs_to_dicts(pairs[: min(len(pairs), 1000)]),
+        output_dir / "sft_pairs_preview.jsonl",
+    )
     write_json(
         collect_run_metadata(
             run_type="rlhf_sft_policy",
@@ -173,7 +196,9 @@ def run_sft_training(config_path: str | Path, *, output_dir: str | Path | None =
     collator = SFTCollator(tokenizer, max_length=int(cfg.data.get("max_length", 1024)))
     num_workers = int(cfg.train.get("num_workers", 0))
     pin_memory = bool(cfg.train.get("pin_memory", torch.cuda.is_available()))
-    persistent_workers = bool(cfg.train.get("persistent_workers", num_workers > 0)) and num_workers > 0
+    persistent_workers = (
+        bool(cfg.train.get("persistent_workers", num_workers > 0)) and num_workers > 0
+    )
     loader = DataLoader(
         SFTDataset(pairs),
         batch_size=int(cfg.train.get("batch_size", 4)),
@@ -194,7 +219,9 @@ def run_sft_training(config_path: str | Path, *, output_dir: str | Path | None =
     max_grad_norm = float(cfg.train.get("max_grad_norm", 1.0))
     total_steps = max(1, (len(loader) * epochs + grad_accum - 1) // grad_accum)
     warmup_steps = int(cfg.train.get("warmup_steps", max(10, int(0.03 * total_steps))))
-    scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=warmup_steps, num_training_steps=total_steps)
+    scheduler = get_cosine_schedule_with_warmup(
+        optimizer, num_warmup_steps=warmup_steps, num_training_steps=total_steps
+    )
 
     global_step = 0
     examples_seen = 0
@@ -231,7 +258,9 @@ def run_sft_training(config_path: str | Path, *, output_dir: str | Path | None =
 
             if pending >= grad_accum:
                 if max_grad_norm > 0:
-                    torch.nn.utils.clip_grad_norm_(policy.trainable_parameters(), max_grad_norm)
+                    torch.nn.utils.clip_grad_norm_(
+                        policy.trainable_parameters(), max_grad_norm
+                    )
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
@@ -254,7 +283,10 @@ def run_sft_training(config_path: str | Path, *, output_dir: str | Path | None =
                     }
                     record.update(_cuda_memory())
                     append_jsonl(record, output_dir / "train_metrics.jsonl")
-                    pbar.set_postfix(loss=f"{record['loss']:.4f}", tok_s=f"{record['tokens_per_sec']:.0f}")
+                    pbar.set_postfix(
+                        loss=f"{record['loss']:.4f}",
+                        tok_s=f"{record['tokens_per_sec']:.0f}",
+                    )
                     running_loss = 0.0
                     running_batches = 0
                     last_log_time = now
@@ -263,7 +295,10 @@ def run_sft_training(config_path: str | Path, *, output_dir: str | Path | None =
                 if artifact_every > 0 and global_step % artifact_every == 0:
                     _refresh_sft_artifacts(output_dir)
                 if save_every_steps > 0 and global_step % save_every_steps == 0:
-                    policy.save_rlhf_pretrained(output_dir / f"checkpoint_step_{global_step:06d}", tokenizer=tokenizer)
+                    policy.save_rlhf_pretrained(
+                        output_dir / f"checkpoint_step_{global_step:06d}",
+                        tokenizer=tokenizer,
+                    )
 
     if pending > 0:
         if max_grad_norm > 0:

@@ -5,7 +5,9 @@ from _bootstrap import ensure_repo_root_on_path
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Evaluate base/SFT/PPO or any policy suite in one reward-model pass.")
+    parser = argparse.ArgumentParser(
+        description="Evaluate base/SFT/PPO or any policy suite in one reward-model pass."
+    )
     parser.add_argument("--config", required=True)
     parser.add_argument("--output-dir", default=None)
     parser.add_argument(
@@ -19,7 +21,9 @@ def main():
     ensure_repo_root_on_path()
     from rlhf.evaluate_suite import run_policy_suite_eval
 
-    out = run_policy_suite_eval(args.config, output_dir=args.output_dir, override_values=args.set)
+    out = run_policy_suite_eval(
+        args.config, output_dir=args.output_dir, override_values=args.set
+    )
     print(f"Policy-suite evaluation artifacts saved to: {Path(out).resolve()}")
 
 

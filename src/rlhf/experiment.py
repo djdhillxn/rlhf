@@ -1,7 +1,5 @@
 """Small, local experiment manifests for reproducible RLHF runs."""
 
-from __future__ import annotations
-
 import hashlib
 import json
 import subprocess
@@ -9,7 +7,7 @@ import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from collections.abc import Mapping
 
 import yaml
 
@@ -18,7 +16,7 @@ MANIFEST_NAME = "experiment_manifest.json"
 SCHEMA_VERSION = 1
 
 
-def _write_json(record: Mapping[str, Any], path: Path) -> None:
+def _write_json(record, path):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(_plain(record), ensure_ascii=False, indent=2) + "\n",
@@ -26,13 +24,13 @@ def _write_json(record: Mapping[str, Any], path: Path) -> None:
     )
 
 
-def _collect_run_metadata(**kwargs: Any) -> dict[str, Any]:
+def _collect_run_metadata(**kwargs):
     from .metrics import collect_run_metadata
 
     return collect_run_metadata(**kwargs)
 
 
-def _plain(value: Any) -> Any:
+def _plain(value):
     if isinstance(value, Mapping):
         return {str(key): _plain(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
@@ -42,20 +40,22 @@ def _plain(value: Any) -> Any:
     return value
 
 
-def config_sha256(config: Mapping[str, Any]) -> str:
-    payload = json.dumps(_plain(config), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+def config_sha256(config):
+    payload = json.dumps(
+        _plain(config), sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _utc_now() -> datetime:
+def _utc_now():
     return datetime.now(timezone.utc)
 
 
-def _iso(dt: datetime) -> str:
+def _iso(dt):
     return dt.isoformat().replace("+00:00", "Z")
 
 
-def _git(args: list[str]) -> str | None:
+def _git(args):
     try:
         result = subprocess.run(
             ["git", *args],
@@ -69,15 +69,24 @@ def _git(args: list[str]) -> str | None:
     return result.stdout.strip() if result.returncode == 0 else None
 
 
-def collect_source_state() -> dict[str, Any]:
+def collect_source_state():
     # Generated run artifacts should not make an otherwise clean source tree
     # appear dirty merely because the output directory was created first.
     status = _git(
-        ["status", "--porcelain", "--untracked-files=normal", "--", ".", ":(exclude)outputs"]
+        [
+            "status",
+            "--porcelain",
+            "--untracked-files=normal",
+            "--",
+            ".",
+            ":(exclude)outputs",
+        ]
     )
     changed_paths = []
     if status:
-        changed_paths = [line[3:] if len(line) > 3 else line for line in status.splitlines()[:100]]
+        changed_paths = [
+            line[3:] if len(line) > 3 else line for line in status.splitlines()[:100]
+        ]
     return {
         "git_commit": _git(["rev-parse", "HEAD"]),
         "git_branch": _git(["branch", "--show-current"]),
@@ -87,19 +96,19 @@ def collect_source_state() -> dict[str, Any]:
     }
 
 
-def _experiment_fields(config: Mapping[str, Any]) -> dict[str, Any]:
+def _experiment_fields(config):
     raw = config.get("experiment", {})
     return _plain(raw) if isinstance(raw, Mapping) else {}
 
 
 def initialize_experiment(
-    output_dir: str | Path,
-    config: Mapping[str, Any],
+    output_dir,
+    config,
     *,
-    run_type: str,
-    config_path: str | Path | None = None,
-    extra: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
+    run_type,
+    config_path=None,
+    extra=None,
+):
     """Create or resume the manifest in an output directory.
 
     Existing run files remain valid. A repeated invocation appends an attempt
@@ -123,7 +132,7 @@ def initialize_experiment(
         "source": collect_source_state(),
     }
 
-    existing: dict[str, Any] = {}
+    existing = {}
     if manifest_path.exists():
         try:
             existing = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -175,7 +184,7 @@ def initialize_experiment(
     return manifest
 
 
-def _read_first_json(output_dir: Path, names: tuple[str, ...]) -> dict[str, Any] | None:
+def _read_first_json(output_dir, names):
     for name in names:
         path = output_dir / name
         if not path.exists():
@@ -190,11 +199,11 @@ def _read_first_json(output_dir: Path, names: tuple[str, ...]) -> dict[str, Any]
 
 
 def finalize_experiment(
-    output_dir: str | Path,
+    output_dir,
     *,
-    status: str = "completed",
-    summary: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
+    status="completed",
+    summary=None,
+):
     output_dir = Path(output_dir)
     manifest_path = output_dir / MANIFEST_NAME
     if not manifest_path.exists():
@@ -210,9 +219,18 @@ def finalize_experiment(
             manifest["duration_seconds"] = max(0.0, (ended - started).total_seconds())
         except ValueError:
             pass
-    resolved_summary = dict(summary) if summary is not None else _read_first_json(
-        output_dir,
-        ("run_summary.json", "policy_suite_summary.json", "eval_summary.json", "final_eval_metrics.json"),
+    resolved_summary = (
+        dict(summary)
+        if summary is not None
+        else _read_first_json(
+            output_dir,
+            (
+                "run_summary.json",
+                "policy_suite_summary.json",
+                "eval_summary.json",
+                "final_eval_metrics.json",
+            ),
+        )
     )
     if resolved_summary is not None:
         manifest["summary"] = _plain(resolved_summary)
@@ -225,7 +243,7 @@ def finalize_experiment(
     return manifest
 
 
-def load_parameters(path: str | Path) -> dict[str, Any]:
+def load_parameters(path):
     """Load parameters from a run directory, manifest, or YAML config."""
 
     path = Path(path)
@@ -246,8 +264,8 @@ def load_parameters(path: str | Path) -> dict[str, Any]:
     return _plain(payload)
 
 
-def flatten_parameters(value: Mapping[str, Any], prefix: str = "") -> dict[str, Any]:
-    flat: dict[str, Any] = {}
+def flatten_parameters(value, prefix=""):
+    flat = {}
     for key, item in value.items():
         name = f"{prefix}.{key}" if prefix else str(key)
         if isinstance(item, Mapping):
@@ -257,7 +275,7 @@ def flatten_parameters(value: Mapping[str, Any], prefix: str = "") -> dict[str, 
     return flat
 
 
-def compare_parameters(left: Mapping[str, Any], right: Mapping[str, Any]) -> list[dict[str, Any]]:
+def compare_parameters(left, right):
     left_flat = flatten_parameters(left)
     right_flat = flatten_parameters(right)
     missing = object()

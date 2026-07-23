@@ -1,22 +1,28 @@
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 import torch
 from torch import nn
 
 
-@dataclass
 class ModelLoadConfig:
-    model_name: str
-    torch_dtype: str = "auto"
-    device_map: str | None = None
-    load_in_4bit: bool = False
-    load_in_8bit: bool = False
-    trust_remote_code: bool = False
+    def __init__(
+        self,
+        model_name,
+        torch_dtype="auto",
+        device_map=None,
+        load_in_4bit=False,
+        load_in_8bit=False,
+        trust_remote_code=False,
+    ):
+        self.model_name = model_name
+        self.torch_dtype = torch_dtype
+        self.device_map = device_map
+        self.load_in_4bit = load_in_4bit
+        self.load_in_8bit = load_in_8bit
+        self.trust_remote_code = trust_remote_code
 
 
-def resolve_dtype(name: str | None):
+def resolve_dtype(name):
     if name is None or str(name).lower() == "auto":
         return "auto"
     name = str(name).lower()
@@ -29,26 +35,30 @@ def resolve_dtype(name: str | None):
     raise ValueError(f"Unsupported torch_dtype: {name}")
 
 
-def build_quantization_config(load_in_4bit: bool = False, load_in_8bit: bool = False):
+def build_quantization_config(load_in_4bit=False, load_in_8bit=False):
     if not load_in_4bit and not load_in_8bit:
         return None
     try:
         from transformers import BitsAndBytesConfig
     except ImportError as exc:  # pragma: no cover
-        raise ImportError("bitsandbytes/transformers quantization support is required for 4/8-bit loading") from exc
+        raise ImportError(
+            "bitsandbytes/transformers quantization support is required for 4/8-bit loading"
+        ) from exc
     if load_in_4bit and load_in_8bit:
         raise ValueError("Choose only one of load_in_4bit or load_in_8bit.")
     if load_in_4bit:
         return BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+            bnb_4bit_compute_dtype=torch.bfloat16
+            if torch.cuda.is_available()
+            else torch.float32,
             bnb_4bit_use_double_quant=True,
         )
     return BitsAndBytesConfig(load_in_8bit=True)
 
 
-def build_lora_config(cfg: dict[str, Any] | None):
+def build_lora_config(cfg):
     if not cfg or not bool(cfg.get("enabled", True)):
         return None
     try:
@@ -64,16 +74,24 @@ def build_lora_config(cfg: dict[str, Any] | None):
         target_modules=list(
             cfg.get(
                 "target_modules",
-                ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+                [
+                    "q_proj",
+                    "k_proj",
+                    "v_proj",
+                    "o_proj",
+                    "gate_proj",
+                    "up_proj",
+                    "down_proj",
+                ],
             )
         ),
     )
 
 
-def load_causal_lm(load_cfg: ModelLoadConfig):
+def load_causal_lm(load_cfg):
     from transformers import AutoModelForCausalLM
 
-    kwargs: dict[str, Any] = {"trust_remote_code": load_cfg.trust_remote_code}
+    kwargs = {"trust_remote_code": load_cfg.trust_remote_code}
     dtype = resolve_dtype(load_cfg.torch_dtype)
     if dtype != "auto":
         # Newer Transformers versions prefer `dtype`; older versions accepted
@@ -87,7 +105,7 @@ def load_causal_lm(load_cfg: ModelLoadConfig):
     return AutoModelForCausalLM.from_pretrained(load_cfg.model_name, **kwargs)
 
 
-def transformer_core(backbone: nn.Module) -> nn.Module | None:
+def transformer_core(backbone):
     """Return the decoder backbone without the LM head when available.
 
     Reward modeling only needs hidden states, not full vocabulary logits. Calling
@@ -107,7 +125,7 @@ def transformer_core(backbone: nn.Module) -> nn.Module | None:
     return None
 
 
-def forward_hidden_states(backbone: nn.Module, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+def forward_hidden_states(backbone, input_ids, attention_mask):
     core = transformer_core(backbone)
     if core is not None:
         outputs = core(
@@ -117,7 +135,10 @@ def forward_hidden_states(backbone: nn.Module, input_ids: torch.Tensor, attentio
             use_cache=False,
             return_dict=True,
         )
-        if hasattr(outputs, "last_hidden_state") and outputs.last_hidden_state is not None:
+        if (
+            hasattr(outputs, "last_hidden_state")
+            and outputs.last_hidden_state is not None
+        ):
             return outputs.last_hidden_state
         if hasattr(outputs, "hidden_states") and outputs.hidden_states is not None:
             return outputs.hidden_states[-1]
@@ -131,7 +152,7 @@ def forward_hidden_states(backbone: nn.Module, input_ids: torch.Tensor, attentio
     return outputs.hidden_states[-1]
 
 
-def last_attended_indices(attention_mask: torch.Tensor) -> torch.Tensor:
+def last_attended_indices(attention_mask):
     """Return the absolute index of the last attended token for each row.
 
     This works for both right- and left-padded batches. The previous implementation
@@ -139,8 +160,12 @@ def last_attended_indices(attention_mask: torch.Tensor) -> torch.Tensor:
     is wrong for left-padded generation batches.
     """
     if attention_mask.ndim != 2:
-        raise ValueError(f"attention_mask must be rank-2, got {tuple(attention_mask.shape)}")
-    positions = torch.arange(attention_mask.size(1), device=attention_mask.device).unsqueeze(0)
+        raise ValueError(
+            f"attention_mask must be rank-2, got {tuple(attention_mask.shape)}"
+        )
+    positions = torch.arange(
+        attention_mask.size(1), device=attention_mask.device
+    ).unsqueeze(0)
     masked_positions = positions.masked_fill(~attention_mask.bool(), 0)
     return masked_positions.max(dim=1).values.long()
 
@@ -148,7 +173,7 @@ def last_attended_indices(attention_mask: torch.Tensor) -> torch.Tensor:
 class RewardModel(nn.Module):
     """Causal LM backbone plus scalar reward head on the last attended token."""
 
-    def __init__(self, backbone: nn.Module, hidden_size: int) -> None:
+    def __init__(self, backbone, hidden_size):
         super().__init__()
         self.backbone = backbone
         self.reward_head = nn.Linear(hidden_size, 1)
@@ -156,16 +181,16 @@ class RewardModel(nn.Module):
     @classmethod
     def from_model_name(
         cls,
-        model_name: str,
+        model_name,
         *,
-        torch_dtype: str = "auto",
-        device_map: str | None = None,
-        load_in_4bit: bool = False,
-        load_in_8bit: bool = False,
-        lora: dict[str, Any] | None = None,
-        gradient_checkpointing: bool = True,
-        trust_remote_code: bool = False,
-    ) -> "RewardModel":
+        torch_dtype="auto",
+        device_map=None,
+        load_in_4bit=False,
+        load_in_8bit=False,
+        lora=None,
+        gradient_checkpointing=True,
+        trust_remote_code=False,
+    ):
         backbone = load_causal_lm(
             ModelLoadConfig(
                 model_name=model_name,
@@ -176,7 +201,9 @@ class RewardModel(nn.Module):
                 trust_remote_code=trust_remote_code,
             )
         )
-        if gradient_checkpointing and hasattr(backbone, "gradient_checkpointing_enable"):
+        if gradient_checkpointing and hasattr(
+            backbone, "gradient_checkpointing_enable"
+        ):
             backbone.gradient_checkpointing_enable()
             if hasattr(backbone.config, "use_cache"):
                 backbone.config.use_cache = False
@@ -189,12 +216,16 @@ class RewardModel(nn.Module):
             from peft import get_peft_model
 
             backbone = get_peft_model(backbone, lora_cfg)
-        hidden_size = int(getattr(backbone.config, "hidden_size", getattr(backbone.config, "n_embd", 0)))
+        hidden_size = int(
+            getattr(
+                backbone.config, "hidden_size", getattr(backbone.config, "n_embd", 0)
+            )
+        )
         if hidden_size <= 0:
             raise ValueError("Could not infer model hidden size from config.")
         return cls(backbone=backbone, hidden_size=hidden_size)
 
-    def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+    def forward(self, input_ids, attention_mask):
         hidden = forward_hidden_states(self.backbone, input_ids, attention_mask)
         last_idx = last_attended_indices(attention_mask)
         batch_idx = torch.arange(input_ids.size(0), device=input_ids.device)
@@ -204,7 +235,7 @@ class RewardModel(nn.Module):
     def trainable_parameters(self):
         return [p for p in self.parameters() if p.requires_grad]
 
-    def save_rlhf_pretrained(self, output_dir: str | Path, tokenizer: Any | None = None) -> None:
+    def save_rlhf_pretrained(self, output_dir, tokenizer=None):
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         if hasattr(self.backbone, "save_pretrained"):
@@ -216,20 +247,22 @@ class RewardModel(nn.Module):
     @classmethod
     def load_rlhf_pretrained(
         cls,
-        checkpoint_dir: str | Path,
+        checkpoint_dir,
         *,
-        base_model_name: str,
-        torch_dtype: str = "auto",
-        device_map: str | None = None,
-        load_in_4bit: bool = False,
-        load_in_8bit: bool = False,
-        trust_remote_code: bool = False,
-        is_trainable: bool = False,
-        strict: bool = True,
-    ) -> "RewardModel":
+        base_model_name,
+        torch_dtype="auto",
+        device_map=None,
+        load_in_4bit=False,
+        load_in_8bit=False,
+        trust_remote_code=False,
+        is_trainable=False,
+        strict=True,
+    ):
         checkpoint_dir = Path(checkpoint_dir)
         if strict and not checkpoint_dir.exists():
-            raise FileNotFoundError(f"Reward checkpoint directory does not exist: {checkpoint_dir}")
+            raise FileNotFoundError(
+                f"Reward checkpoint directory does not exist: {checkpoint_dir}"
+            )
         model = cls.from_model_name(
             base_model_name,
             torch_dtype=torch_dtype,
@@ -244,7 +277,9 @@ class RewardModel(nn.Module):
         if adapter_dir.exists():
             from peft import PeftModel
 
-            model.backbone = PeftModel.from_pretrained(model.backbone, adapter_dir, is_trainable=is_trainable)
+            model.backbone = PeftModel.from_pretrained(
+                model.backbone, adapter_dir, is_trainable=is_trainable
+            )
         elif strict:
             raise FileNotFoundError(
                 f"Reward adapter/model directory missing: {adapter_dir}. "
@@ -252,7 +287,9 @@ class RewardModel(nn.Module):
             )
         reward_head_path = checkpoint_dir / "reward_head.pt"
         if reward_head_path.exists():
-            model.reward_head.load_state_dict(torch.load(reward_head_path, map_location="cpu"))
+            model.reward_head.load_state_dict(
+                torch.load(reward_head_path, map_location="cpu")
+            )
         else:
             raise FileNotFoundError(f"Missing reward head: {reward_head_path}")
         return model

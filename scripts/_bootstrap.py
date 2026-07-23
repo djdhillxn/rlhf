@@ -2,7 +2,7 @@ import sys
 from pathlib import Path
 
 
-def ensure_repo_root_on_path() -> None:
+def ensure_repo_root_on_path():
     repo_root = Path(__file__).resolve().parents[1]
     src_dir = repo_root / "src"
     for path in (src_dir, repo_root):

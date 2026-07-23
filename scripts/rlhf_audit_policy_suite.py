@@ -5,7 +5,6 @@ import re
 from collections import Counter
 from pathlib import Path
 from statistics import mean, median
-from typing import Any
 
 
 BASE = "base"
@@ -28,8 +27,8 @@ SENSITIVE_TERMS = (
 )
 
 
-def _load_jsonl(path: Path) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
+def _load_jsonl(path):
+    rows = []
     with path.open("r", encoding="utf-8") as handle:
         for line in handle:
             line = line.strip()
@@ -38,14 +37,16 @@ def _load_jsonl(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def _extract_user_prompt(rendered_prompt: str) -> str:
-    matches = re.findall(r"<\|im_start\|>user\n(.*?)<\|im_end\|>", str(rendered_prompt), flags=re.S)
+def _extract_user_prompt(rendered_prompt):
+    matches = re.findall(
+        r"<\|im_start\|>user\n(.*?)<\|im_end\|>", str(rendered_prompt), flags=re.S
+    )
     if matches:
         return matches[-1].strip()
     return str(rendered_prompt).replace("<|im_start|>assistant\n", "").strip()
 
 
-def _repetition_metrics(text: str) -> dict[str, float | int]:
+def _repetition_metrics(text):
     words = re.findall(r"[\w']+", str(text).lower(), flags=re.UNICODE)
     ngrams = [tuple(words[i : i + 4]) for i in range(max(0, len(words) - 3))]
     counts = Counter(ngrams)
@@ -58,7 +59,7 @@ def _repetition_metrics(text: str) -> dict[str, float | int]:
     }
 
 
-def _sensitive_terms(text: str) -> list[str]:
+def _sensitive_terms(text):
     lowered = str(text).lower()
     return [
         term
@@ -67,7 +68,7 @@ def _sensitive_terms(text: str) -> list[str]:
     ]
 
 
-def _enrich(rows: list[dict[str, Any]]) -> None:
+def _enrich(rows):
     for row in rows:
         row["user_prompt"] = _extract_user_prompt(row.get("prompt", ""))
         for policy in POLICIES:
@@ -75,10 +76,12 @@ def _enrich(rows: list[dict[str, Any]]) -> None:
             metrics = _repetition_metrics(row.get(f"{policy}_response", ""))
             for key, value in metrics.items():
                 row[prefix + key] = value
-            row[prefix + "sensitive_terms"] = ",".join(_sensitive_terms(row.get(f"{policy}_response", "")))
+            row[prefix + "sensitive_terms"] = ",".join(
+                _sensitive_terms(row.get(f"{policy}_response", ""))
+            )
 
 
-def _write_csv(rows: list[dict[str, Any]], path: Path, fields: list[str]) -> None:
+def _write_csv(rows, path, fields):
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore")
@@ -86,11 +89,11 @@ def _write_csv(rows: list[dict[str, Any]], path: Path, fields: list[str]) -> Non
         writer.writerows(rows)
 
 
-def _percent(value: float) -> str:
+def _percent(value):
     return f"{100.0 * value:.2f}%"
 
 
-def _policy_stats(rows: list[dict[str, Any]], policy: str) -> dict[str, float | int]:
+def _policy_stats(rows, policy):
     rewards = [float(row[f"{policy}_reward"]) for row in rows]
     tokens = [int(row[f"{policy}_response_tokens"]) for row in rows]
     repetitions = [float(row[f"{policy}_repeated_4gram_fraction"]) for row in rows]
@@ -105,11 +108,13 @@ def _policy_stats(rows: list[dict[str, Any]], policy: str) -> dict[str, float | 
         "heavy_repetition_rate": mean(value > 0.25 for value in repetitions),
         "severe_repetition": sum(value > 0.50 for value in repetitions),
         "severe_repetition_rate": mean(value > 0.50 for value in repetitions),
-        "sensitive_term_hits": sum(bool(row[f"{policy}_sensitive_terms"]) for row in rows),
+        "sensitive_term_hits": sum(
+            bool(row[f"{policy}_sensitive_terms"]) for row in rows
+        ),
     }
 
 
-def _delta_stats(rows: list[dict[str, Any]], column: str) -> dict[str, float | int]:
+def _delta_stats(rows, column):
     values = [float(row[column]) for row in rows]
     wins = [value for value in values if value > 0.0]
     losses = [value for value in values if value < 0.0]
@@ -126,36 +131,48 @@ def _delta_stats(rows: list[dict[str, Any]], column: str) -> dict[str, float | i
     }
 
 
-def _comparison_rows(current: list[dict[str, Any]], baseline: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _comparison_rows(current, baseline):
     current_by_idx = {int(row["idx"]): row for row in current}
     baseline_by_idx = {int(row["idx"]): row for row in baseline}
     if current_by_idx.keys() != baseline_by_idx.keys():
-        raise ValueError("Current and baseline evaluations do not contain the same example indices.")
+        raise ValueError(
+            "Current and baseline evaluations do not contain the same example indices."
+        )
 
-    comparisons: list[dict[str, Any]] = []
+    comparisons = []
     for policy in POLICIES:
         changed = 0
         old_uncapped_changed = 0
         old_capped_changed = 0
-        reward_changes: list[float] = []
-        token_changes: list[int] = []
+        reward_changes = []
+        token_changes = []
         for idx, current_row in current_by_idx.items():
             baseline_row = baseline_by_idx[idx]
-            response_changed = current_row[f"{policy}_response"] != baseline_row[f"{policy}_response"]
+            response_changed = (
+                current_row[f"{policy}_response"] != baseline_row[f"{policy}_response"]
+            )
             changed += response_changed
             if bool(baseline_row[f"{policy}_cap_hit"]):
                 old_capped_changed += response_changed
             else:
                 old_uncapped_changed += response_changed
-            reward_changes.append(float(current_row[f"{policy}_reward"]) - float(baseline_row[f"{policy}_reward"]))
+            reward_changes.append(
+                float(current_row[f"{policy}_reward"])
+                - float(baseline_row[f"{policy}_reward"])
+            )
             token_changes.append(
-                int(current_row[f"{policy}_response_tokens"]) - int(baseline_row[f"{policy}_response_tokens"])
+                int(current_row[f"{policy}_response_tokens"])
+                - int(baseline_row[f"{policy}_response_tokens"])
             )
         comparisons.append(
             {
                 "policy": policy,
-                "baseline_cap_hits": sum(bool(row[f"{policy}_cap_hit"]) for row in baseline),
-                "current_cap_hits": sum(bool(row[f"{policy}_cap_hit"]) for row in current),
+                "baseline_cap_hits": sum(
+                    bool(row[f"{policy}_cap_hit"]) for row in baseline
+                ),
+                "current_cap_hits": sum(
+                    bool(row[f"{policy}_cap_hit"]) for row in current
+                ),
                 "changed_responses": changed,
                 "baseline_uncapped_changed": old_uncapped_changed,
                 "baseline_capped_changed": old_capped_changed,
@@ -168,7 +185,7 @@ def _comparison_rows(current: list[dict[str, Any]], baseline: list[dict[str, Any
     return comparisons
 
 
-def _candidate_fields() -> list[str]:
+def _candidate_fields():
     ppo_base_delta = f"delta_{PPO}_minus_{BASE}"
     ppo_sft_delta = f"delta_{PPO}_minus_{SFT}"
     fields = [
@@ -196,7 +213,7 @@ def _candidate_fields() -> list[str]:
     return fields
 
 
-def _markdown_table(rows: list[dict[str, Any]], columns: list[tuple[str, str]], limit: int = 20) -> list[str]:
+def _markdown_table(rows, columns, limit=20):
     lines = [
         "| " + " | ".join(label for _, label in columns) + " |",
         "|" + "|".join("---" if i == 0 else "---:" for i in range(len(columns))) + "|",
@@ -214,14 +231,14 @@ def _markdown_table(rows: list[dict[str, Any]], columns: list[tuple[str, str]], 
 
 
 def _write_report(
-    rows: list[dict[str, Any]],
-    output_path: Path,
-    comparisons: list[dict[str, Any]] | None,
-    qualified: list[dict[str, Any]],
-    losses: list[dict[str, Any]],
-    repetition_risks: list[dict[str, Any]],
-    reward_mismatches: list[dict[str, Any]],
-) -> None:
+    rows,
+    output_path,
+    comparisons,
+    qualified,
+    losses,
+    repetition_risks,
+    reward_mismatches,
+):
     policy_stats = {policy: _policy_stats(rows, policy) for policy in POLICIES}
     ppo_base_delta = f"delta_{PPO}_minus_{BASE}"
     ppo_sft_delta = f"delta_{PPO}_minus_{SFT}"
@@ -305,10 +322,10 @@ def _write_report(
 
 
 def _write_selected_examples(
-    rows: list[dict[str, Any]],
-    selection_file: Path,
-    output_path: Path,
-) -> None:
+    rows,
+    selection_file,
+    output_path,
+):
     selection = json.loads(selection_file.read_text(encoding="utf-8"))
     rows_by_idx = {int(row["idx"]): row for row in rows}
     lines = [
@@ -355,10 +372,12 @@ def _write_selected_examples(
     output_path.write_text("\n".join(lines), encoding="utf-8")
 
 
-def main() -> None:
+def main():
     global BASE, SFT, PPO, POLICIES
 
-    parser = argparse.ArgumentParser(description="Audit policy-suite outputs and export qualitative curation candidates.")
+    parser = argparse.ArgumentParser(
+        description="Audit policy-suite outputs and export qualitative curation candidates."
+    )
     parser.add_argument("--eval-dir", required=True, type=Path)
     parser.add_argument("--baseline-dir", type=Path)
     parser.add_argument("--selection-file", type=Path)
@@ -416,10 +435,18 @@ def main() -> None:
     )
 
     fields = _candidate_fields()
-    _write_csv(qualified, args.eval_dir / "curation_qualified_ppo_candidates.csv", fields)
+    _write_csv(
+        qualified, args.eval_dir / "curation_qualified_ppo_candidates.csv", fields
+    )
     _write_csv(losses, args.eval_dir / "curation_strong_ppo_losses.csv", fields)
-    _write_csv(repetition_risks, args.eval_dir / "curation_ppo_repetition_risks.csv", fields)
-    _write_csv(reward_mismatches, args.eval_dir / "curation_reward_model_mismatches.csv", fields)
+    _write_csv(
+        repetition_risks, args.eval_dir / "curation_ppo_repetition_risks.csv", fields
+    )
+    _write_csv(
+        reward_mismatches,
+        args.eval_dir / "curation_reward_model_mismatches.csv",
+        fields,
+    )
 
     comparisons = None
     if args.baseline_dir is not None:

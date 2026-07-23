@@ -20,11 +20,9 @@ Run from repo root:
 
 import argparse
 import json
-import math
 from collections import defaultdict
 from pathlib import Path
 
-import os
 import sys
 
 # Make the src-layout package importable when running from a checkout.
@@ -33,10 +31,12 @@ SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-DEFAULT_SYSTEM_PROMPT = "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."
+DEFAULT_SYSTEM_PROMPT = (
+    "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."
+)
 
 
-def load_preference_split(split: str):
+def load_preference_split(split):
     """Prefer repo loader if available; otherwise fall back to datasets.load_dataset."""
     try:
         from rlhf.data import load_helpsteer3_preference
@@ -61,7 +61,9 @@ def load_preference_split(split: str):
         except Exception as exc:
             last_exc = exc
 
-    raise RuntimeError(f"Could not load HelpSteer3 preference split={split}") from last_exc
+    raise RuntimeError(
+        f"Could not load HelpSteer3 preference split={split}"
+    ) from last_exc
 
 
 def normalize_role(role):
@@ -119,6 +121,7 @@ def normalize_context(context):
     # If no system message exists, Qwen tokenizer's chat template will inject its default system prompt.
     return messages
 
+
 def get_preference_score(row):
     for key in [
         "preference_score",
@@ -134,16 +137,31 @@ def get_preference_score(row):
                 pass
     return None
 
+
 def get_responses(row):
     response1 = None
     response2 = None
 
-    for key in ["response1", "response_1", "answer1", "answer_1", "output1", "output_1"]:
+    for key in [
+        "response1",
+        "response_1",
+        "answer1",
+        "answer_1",
+        "output1",
+        "output_1",
+    ]:
         if key in row and row[key] is not None:
             response1 = row[key]
             break
 
-    for key in ["response2", "response_2", "answer2", "answer_2", "output2", "output_2"]:
+    for key in [
+        "response2",
+        "response_2",
+        "answer2",
+        "answer_2",
+        "output2",
+        "output_2",
+    ]:
         if key in row and row[key] is not None:
             response2 = row[key]
             break
@@ -151,6 +169,7 @@ def get_responses(row):
     response1 = "" if response1 is None else str(response1)
     response2 = "" if response2 is None else str(response2)
     return response1, response2
+
 
 def chosen_rejected_from_row(row):
     score = get_preference_score(row)
@@ -211,19 +230,29 @@ def compute_limit_stats(row, limits):
         out[f"sft_chosen_truncated_{key}"] = chosen_full > limit
         out[f"rm_chosen_truncated_{key}"] = chosen_full > limit
         out[f"rm_rejected_truncated_{key}"] = rejected_full > limit
-        out[f"rm_any_truncated_{key}"] = (chosen_full > limit) or (rejected_full > limit)
+        out[f"rm_any_truncated_{key}"] = (chosen_full > limit) or (
+            rejected_full > limit
+        )
 
         out[f"sft_chosen_response_tokens_visible_{key}"] = chosen_visible_resp
-        out[f"sft_chosen_response_tokens_lost_{key}"] = max(0, chosen_resp - chosen_visible_resp)
+        out[f"sft_chosen_response_tokens_lost_{key}"] = max(
+            0, chosen_resp - chosen_visible_resp
+        )
 
         out[f"rm_chosen_response_tokens_visible_{key}"] = chosen_visible_resp
-        out[f"rm_chosen_response_tokens_lost_{key}"] = max(0, chosen_resp - chosen_visible_resp)
+        out[f"rm_chosen_response_tokens_lost_{key}"] = max(
+            0, chosen_resp - chosen_visible_resp
+        )
         out[f"rm_rejected_response_tokens_visible_{key}"] = rejected_visible_resp
-        out[f"rm_rejected_response_tokens_lost_{key}"] = max(0, rejected_resp - rejected_visible_resp)
+        out[f"rm_rejected_response_tokens_lost_{key}"] = max(
+            0, rejected_resp - rejected_visible_resp
+        )
 
         out[f"sft_no_response_tokens_visible_{key}"] = chosen_visible_resp <= 0
         out[f"rm_chosen_no_response_tokens_visible_{key}"] = chosen_visible_resp <= 0
-        out[f"rm_rejected_no_response_tokens_visible_{key}"] = rejected_visible_resp <= 0
+        out[f"rm_rejected_no_response_tokens_visible_{key}"] = (
+            rejected_visible_resp <= 0
+        )
 
     return out
 
@@ -251,23 +280,43 @@ def summarize(df, limits, group_cols=None):
         base["chosen_full_tokens_p90"] = float(g["chosen_full_tokens"].quantile(0.90))
         base["chosen_full_tokens_p95"] = float(g["chosen_full_tokens"].quantile(0.95))
         base["chosen_full_tokens_p99"] = float(g["chosen_full_tokens"].quantile(0.99))
-        base["rejected_full_tokens_p50"] = float(g["rejected_full_tokens"].quantile(0.50))
-        base["rejected_full_tokens_p90"] = float(g["rejected_full_tokens"].quantile(0.90))
-        base["rejected_full_tokens_p95"] = float(g["rejected_full_tokens"].quantile(0.95))
-        base["rejected_full_tokens_p99"] = float(g["rejected_full_tokens"].quantile(0.99))
+        base["rejected_full_tokens_p50"] = float(
+            g["rejected_full_tokens"].quantile(0.50)
+        )
+        base["rejected_full_tokens_p90"] = float(
+            g["rejected_full_tokens"].quantile(0.90)
+        )
+        base["rejected_full_tokens_p95"] = float(
+            g["rejected_full_tokens"].quantile(0.95)
+        )
+        base["rejected_full_tokens_p99"] = float(
+            g["rejected_full_tokens"].quantile(0.99)
+        )
 
         total_chosen_resp = max(float(g["chosen_response_tokens_est"].sum()), 1.0)
         total_rejected_resp = max(float(g["rejected_response_tokens_est"].sum()), 1.0)
 
         for limit in limits:
             key = str(limit)
-            base[f"prompt_exceeds_rate_{key}"] = float(g[f"prompt_exceeds_{key}"].mean())
-            base[f"sft_chosen_trunc_rate_{key}"] = float(g[f"sft_chosen_truncated_{key}"].mean())
-            base[f"rm_chosen_trunc_rate_{key}"] = float(g[f"rm_chosen_truncated_{key}"].mean())
-            base[f"rm_rejected_trunc_rate_{key}"] = float(g[f"rm_rejected_truncated_{key}"].mean())
-            base[f"rm_any_trunc_rate_{key}"] = float(g[f"rm_any_truncated_{key}"].mean())
+            base[f"prompt_exceeds_rate_{key}"] = float(
+                g[f"prompt_exceeds_{key}"].mean()
+            )
+            base[f"sft_chosen_trunc_rate_{key}"] = float(
+                g[f"sft_chosen_truncated_{key}"].mean()
+            )
+            base[f"rm_chosen_trunc_rate_{key}"] = float(
+                g[f"rm_chosen_truncated_{key}"].mean()
+            )
+            base[f"rm_rejected_trunc_rate_{key}"] = float(
+                g[f"rm_rejected_truncated_{key}"].mean()
+            )
+            base[f"rm_any_trunc_rate_{key}"] = float(
+                g[f"rm_any_truncated_{key}"].mean()
+            )
 
-            base[f"sft_no_response_visible_rate_{key}"] = float(g[f"sft_no_response_tokens_visible_{key}"].mean())
+            base[f"sft_no_response_visible_rate_{key}"] = float(
+                g[f"sft_no_response_tokens_visible_{key}"].mean()
+            )
             base[f"rm_rejected_no_response_visible_rate_{key}"] = float(
                 g[f"rm_rejected_no_response_tokens_visible_{key}"].mean()
             )
@@ -302,14 +351,18 @@ def write_markdown(summary_overall, summary_by_domain, output_path, limits):
         lines.append(f"### Split: `{split}`")
         lines.append("")
         lines.append(f"- Rows: `{int(row['n'])}`")
-        lines.append(f"- Prompt tokens p50/p90: `{row['prompt_tokens_p50']:.1f}` / `{row['prompt_tokens_p90']:.1f}`")
+        lines.append(
+            f"- Prompt tokens p50/p90: `{row['prompt_tokens_p50']:.1f}` / `{row['prompt_tokens_p90']:.1f}`"
+        )
         lines.append(
             f"- Chosen full tokens p50/p90/p95/p99: "
             f"`{row['chosen_full_tokens_p50']:.1f}` / `{row['chosen_full_tokens_p90']:.1f}` / "
             f"`{row['chosen_full_tokens_p95']:.1f}` / `{row['chosen_full_tokens_p99']:.1f}`"
         )
         lines.append("")
-        lines.append("| limit | SFT chosen trunc | RM any trunc | SFT chosen resp-token loss | RM rejected resp-token loss | prompt exceeds |")
+        lines.append(
+            "| limit | SFT chosen trunc | RM any trunc | SFT chosen resp-token loss | RM rejected resp-token loss | prompt exceeds |"
+        )
         lines.append("|---:|---:|---:|---:|---:|---:|")
         for limit in limits:
             key = str(limit)
@@ -333,7 +386,9 @@ def write_markdown(summary_overall, summary_by_domain, output_path, limits):
             key = str(limit)
             lines.append(f"#### Limit `{limit}`")
             lines.append("")
-            lines.append("| domain | n | SFT chosen trunc | RM any trunc | SFT response-token loss | RM rejected response-token loss |")
+            lines.append(
+                "| domain | n | SFT chosen trunc | RM any trunc | SFT response-token loss | RM rejected response-token loss |"
+            )
             lines.append("|---|---:|---:|---:|---:|---:|")
             for _, row in sub.sort_values("domain").iterrows():
                 lines.append(
@@ -352,10 +407,16 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-name", default="Qwen/Qwen2.5-0.5B-Instruct")
     parser.add_argument("--splits", nargs="+", default=["train", "validation"])
-    parser.add_argument("--limits", nargs="+", type=int, default=[1024, 2048, 3072, 4096])
+    parser.add_argument(
+        "--limits", nargs="+", type=int, default=[1024, 2048, 3072, 4096]
+    )
     parser.add_argument("--output-dir", default="outputs/rlhf/length_diagnostics")
     parser.add_argument("--max-examples-per-split", type=int, default=None)
-    parser.add_argument("--save-per-example", action="store_true", help="Save per-example CSV. This can be large.")
+    parser.add_argument(
+        "--save-per-example",
+        action="store_true",
+        help="Save per-example CSV. This can be large.",
+    )
     args = parser.parse_args()
 
     global pd, tqdm
@@ -405,7 +466,9 @@ def main():
                 rejected_full_tokens = token_count(tokenizer, rejected_full_text)
 
                 chosen_response_tokens_est = max(0, chosen_full_tokens - prompt_tokens)
-                rejected_response_tokens_est = max(0, rejected_full_tokens - prompt_tokens)
+                rejected_response_tokens_est = max(
+                    0, rejected_full_tokens - prompt_tokens
+                )
 
                 rec = {
                     "split": split,

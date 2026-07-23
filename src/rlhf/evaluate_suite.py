@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import hashlib
 import itertools
 import json
@@ -7,7 +5,6 @@ import math
 import re
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
 
 import torch
 from torch import nn
@@ -27,24 +24,26 @@ from .trl_models import load_reward_center
 class HFSequenceRewardAdapter(nn.Module):
     """Expose a Transformers sequence classifier through the legacy scalar API."""
 
-    def __init__(self, model: nn.Module, offset: float = 0.0) -> None:
+    def __init__(self, model, offset=0.0):
         super().__init__()
         self.model = model
         self.offset = float(offset)
 
-    def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
-        output = self.model(input_ids=input_ids, attention_mask=attention_mask, use_cache=False)
+    def forward(self, input_ids, attention_mask):
+        output = self.model(
+            input_ids=input_ids, attention_mask=attention_mask, use_cache=False
+        )
         return output.logits.squeeze(-1) - self.offset
 
 
-def _device_from_cfg(cfg: dict[str, Any]) -> torch.device:
+def _device_from_cfg(cfg):
     name = str(cfg.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
     if name == "cuda" and not torch.cuda.is_available():
         name = "cpu"
     return torch.device(name)
 
 
-def _resolve_num_prompts(value: Any) -> int | None:
+def _resolve_num_prompts(value):
     """Resolve eval.num_prompts; accepts integers or all/full/null/-1 for complete split."""
     if value is None:
         return None
@@ -56,11 +55,13 @@ def _resolve_num_prompts(value: Any) -> int | None:
     try:
         n = int(value)
     except (TypeError, ValueError) as exc:
-        raise ValueError(f"eval.num_prompts must be an integer or 'all', got {value!r}") from exc
+        raise ValueError(
+            f"eval.num_prompts must be an integer or 'all', got {value!r}"
+        ) from exc
     return None if n <= 0 else n
 
 
-def _safe_label(label: str) -> str:
+def _safe_label(label):
     label = str(label).strip().lower()
     label = re.sub(r"[^a-z0-9_]+", "_", label)
     label = re.sub(r"_+", "_", label).strip("_")
@@ -69,13 +70,13 @@ def _safe_label(label: str) -> str:
     return label
 
 
-def _none_if_empty(value: Any) -> str | None:
+def _none_if_empty(value):
     if value in {None, "", "none", "None", "null", "NULL"}:
         return None
     return str(value)
 
 
-def _looks_like_local_path(value: str) -> bool:
+def _looks_like_local_path(value):
     expanded = Path(value).expanduser()
     return (
         expanded.is_absolute()
@@ -84,21 +85,31 @@ def _looks_like_local_path(value: str) -> bool:
     )
 
 
-def _looks_like_policy_checkpoint(path: Path) -> bool:
+def _looks_like_policy_checkpoint(path):
     """Return True only for actual saved policy checkpoints.
 
     This prevents the dangerous failure mode where a typo such as
     `checkpoints/checkpoint_00250` silently loads the base model because no
     adapter exists at that location.
     """
-    return path.exists() and (path / "adapter_or_model").exists() and (path / "value_head.pt").exists()
+    return (
+        path.exists()
+        and (path / "adapter_or_model").exists()
+        and (path / "value_head.pt").exists()
+    )
 
 
-def _checkpoint_candidates_from_path(path: Path) -> list[Path]:
+def _checkpoint_candidates_from_path(path):
     candidates = [path]
 
     # If the user accidentally points to an output dir, try common children.
-    candidates.extend([path / "checkpoint_final", path / "checkpoints" / "update_00250", path / "checkpoint_00250"])
+    candidates.extend(
+        [
+            path / "checkpoint_final",
+            path / "checkpoints" / "update_00250",
+            path / "checkpoint_00250",
+        ]
+    )
 
     # If the user writes checkpoints/checkpoint_00250 but the run saved
     # checkpoints/update_00250, repair that common naming mismatch.
@@ -106,15 +117,21 @@ def _checkpoint_candidates_from_path(path: Path) -> list[Path]:
     if digits:
         update_name = f"update_{int(digits):05d}"
         old_name = f"checkpoint_{int(digits):05d}"
-        candidates.extend([
-            path.parent / update_name,
-            path.parent / old_name,
-            path.parent.parent / "checkpoints" / update_name,
-            path.parent.parent / old_name,
-        ])
+        candidates.extend(
+            [
+                path.parent / update_name,
+                path.parent / old_name,
+                path.parent.parent / "checkpoints" / update_name,
+                path.parent.parent / old_name,
+            ]
+        )
 
     # If a manifest exists, add its saved paths.
-    possible_manifests = [path / "checkpoints" / "manifest.json", path.parent / "manifest.json", path.parent.parent / "manifest.json"]
+    possible_manifests = [
+        path / "checkpoints" / "manifest.json",
+        path.parent / "manifest.json",
+        path.parent.parent / "manifest.json",
+    ]
     for manifest in possible_manifests:
         if not manifest.exists():
             continue
@@ -129,8 +146,8 @@ def _checkpoint_candidates_from_path(path: Path) -> list[Path]:
         except Exception:
             pass
 
-    deduped: list[Path] = []
-    seen: set[str] = set()
+    deduped = []
+    seen = set()
     for candidate in candidates:
         key = str(candidate)
         if key not in seen:
@@ -139,7 +156,7 @@ def _checkpoint_candidates_from_path(path: Path) -> list[Path]:
     return deduped
 
 
-def _resolve_checkpoint_dir(spec: dict[str, Any]) -> str | None:
+def _resolve_checkpoint_dir(spec):
     """Resolve a policy checkpoint specification.
 
     Supported forms:
@@ -154,7 +171,9 @@ def _resolve_checkpoint_dir(spec: dict[str, Any]) -> str | None:
     """
     checkpoint_format = str(spec.get("format", "legacy")).lower()
     checkpoint_dir = _none_if_empty(
-        spec.get("model_path", spec.get("checkpoint_dir", spec.get("policy_checkpoint_dir")))
+        spec.get(
+            "model_path", spec.get("checkpoint_dir", spec.get("policy_checkpoint_dir"))
+        )
     )
     if checkpoint_format in {"hf", "huggingface", "trl", "peft"}:
         if checkpoint_dir is None:
@@ -174,7 +193,9 @@ def _resolve_checkpoint_dir(spec: dict[str, Any]) -> str | None:
         for candidate in _checkpoint_candidates_from_path(path):
             if _looks_like_policy_checkpoint(candidate):
                 return str(candidate)
-        tried = "\n  - ".join(str(c) for c in _checkpoint_candidates_from_path(path)[:12])
+        tried = "\n  - ".join(
+            str(c) for c in _checkpoint_candidates_from_path(path)[:12]
+        )
         raise FileNotFoundError(
             f"Could not resolve policy checkpoint for label={spec.get('label')!r}. "
             f"Requested: {path}\nTried:\n  - {tried}"
@@ -208,11 +229,15 @@ def _resolve_checkpoint_dir(spec: dict[str, Any]) -> str | None:
     )
 
 
-def _policy_specs(cfg) -> list[dict[str, Any]]:
+def _policy_specs(cfg):
     specs = [dict(x) for x in cfg.get("policies", [])]
     if not specs:
-        raise ValueError("Policy-suite eval requires a top-level `policies:` list in the config.")
-    labels = [_safe_label(str(s.get("label", f"policy_{i}"))) for i, s in enumerate(specs)]
+        raise ValueError(
+            "Policy-suite eval requires a top-level `policies:` list in the config."
+        )
+    labels = [
+        _safe_label(str(s.get("label", f"policy_{i}"))) for i, s in enumerate(specs)
+    ]
     if len(set(labels)) != len(labels):
         raise ValueError(f"Duplicate policy labels after sanitization: {labels}")
     out = []
@@ -229,7 +254,7 @@ def _policy_specs(cfg) -> list[dict[str, Any]]:
     return out
 
 
-def _eos_token_ids(tokenizer: Any) -> set[int]:
+def _eos_token_ids(tokenizer):
     eos = tokenizer.eos_token_id
     if eos is None:
         return set()
@@ -238,10 +263,10 @@ def _eos_token_ids(tokenizer: Any) -> set[int]:
     return {int(eos)}
 
 
-def _response_lengths_and_eos(response_ids: torch.Tensor, tokenizer: Any) -> tuple[torch.Tensor, torch.Tensor]:
+def _response_lengths_and_eos(response_ids, tokenizer):
     eos_ids = _eos_token_ids(tokenizer)
-    lengths: list[int] = []
-    hit: list[bool] = []
+    lengths = []
+    hit = []
     for row in response_ids.detach().cpu().tolist():
         keep = len(row)
         hit_eos = False
@@ -259,23 +284,32 @@ def _response_lengths_and_eos(response_ids: torch.Tensor, tokenizer: Any) -> tup
     )
 
 
-def _build_full_attention(prompt_attention: torch.Tensor, generated: torch.Tensor, prompt_width: int, response_lengths: torch.Tensor) -> torch.Tensor:
+def _build_full_attention(prompt_attention, generated, prompt_width, response_lengths):
     full_attention = torch.zeros_like(generated, dtype=torch.long)
     full_attention[:, :prompt_width] = prompt_attention.long()
     if generated.size(1) > prompt_width:
-        pos = torch.arange(generated.size(1) - prompt_width, device=generated.device).unsqueeze(0)
+        pos = torch.arange(
+            generated.size(1) - prompt_width, device=generated.device
+        ).unsqueeze(0)
         full_attention[:, prompt_width:] = (pos < response_lengths.unsqueeze(1)).long()
     return full_attention
 
 
-def _load_policy(cfg, spec: dict[str, Any], device: torch.device, tokenizer: Any | None = None) -> nn.Module:
+def _load_policy(cfg, spec, device, tokenizer=None):
     model_name = str(cfg.model.get("name", "Qwen/Qwen2.5-0.5B-Instruct"))
     checkpoint_dir = spec.get("checkpoint_dir")
     checkpoint_format = str(spec.get("format", "legacy")).lower()
     torch_dtype = str(spec.get("torch_dtype", cfg.model.get("torch_dtype", "auto")))
     device_map = spec.get("device_map", cfg.model.get("policy_device_map"))
-    load_in_4bit = bool(spec.get("load_in_4bit", cfg.model.get("policy_load_in_4bit", cfg.model.get("load_in_4bit", False))))
-    load_in_8bit = bool(spec.get("load_in_8bit", cfg.model.get("policy_load_in_8bit", False)))
+    load_in_4bit = bool(
+        spec.get(
+            "load_in_4bit",
+            cfg.model.get("policy_load_in_4bit", cfg.model.get("load_in_4bit", False)),
+        )
+    )
+    load_in_8bit = bool(
+        spec.get("load_in_8bit", cfg.model.get("policy_load_in_8bit", False))
+    )
     trust_remote_code = bool(cfg.model.get("trust_remote_code", False))
     local_files_only = bool(cfg.model.get("local_files_only", False))
 
@@ -283,7 +317,7 @@ def _load_policy(cfg, spec: dict[str, Any], device: torch.device, tokenizer: Any
         from transformers import AutoModelForCausalLM
 
         model_path = checkpoint_dir or spec.get("model_path") or model_name
-        kwargs: dict[str, Any] = {
+        kwargs = {
             "trust_remote_code": trust_remote_code,
             "local_files_only": local_files_only,
         }
@@ -343,23 +377,33 @@ def _load_policy(cfg, spec: dict[str, Any], device: torch.device, tokenizer: Any
     return policy
 
 
-def _load_reward_model(cfg, device: torch.device) -> nn.Module:
+def _load_reward_model(cfg, device):
     model_name = str(cfg.model.get("name", "Qwen/Qwen2.5-0.5B-Instruct"))
     checkpoint_format = str(cfg.reward_model.get("format", "legacy")).lower()
     if checkpoint_format in {"hf", "huggingface", "trl"}:
         from transformers import AutoModelForSequenceClassification
 
         checkpoint_dir = str(cfg.reward_model.get("checkpoint_dir"))
-        kwargs: dict[str, Any] = {
+        kwargs = {
             "num_labels": 1,
             "trust_remote_code": bool(cfg.model.get("trust_remote_code", False)),
             "local_files_only": bool(cfg.model.get("local_files_only", False)),
         }
-        dtype = resolve_dtype(str(cfg.reward_model.get("torch_dtype", cfg.model.get("torch_dtype", "auto"))))
+        dtype = resolve_dtype(
+            str(
+                cfg.reward_model.get(
+                    "torch_dtype", cfg.model.get("torch_dtype", "auto")
+                )
+            )
+        )
         if dtype != "auto":
             kwargs["dtype"] = dtype
-        model = AutoModelForSequenceClassification.from_pretrained(checkpoint_dir, **kwargs)
-        model.config.pad_token_id = cfg.reward_model.get("pad_token_id", model.config.pad_token_id)
+        model = AutoModelForSequenceClassification.from_pretrained(
+            checkpoint_dir, **kwargs
+        )
+        model.config.pad_token_id = cfg.reward_model.get(
+            "pad_token_id", model.config.pad_token_id
+        )
         if cfg.reward_model.get("device_map") is None:
             model.to(device)
         offset = load_reward_center(cfg.reward_model.get("reward_center_path"))
@@ -372,7 +416,9 @@ def _load_reward_model(cfg, device: torch.device) -> nn.Module:
     reward_model = RewardModel.load_rlhf_pretrained(
         str(cfg.reward_model.get("checkpoint_dir")),
         base_model_name=model_name,
-        torch_dtype=str(cfg.reward_model.get("torch_dtype", cfg.model.get("torch_dtype", "auto"))),
+        torch_dtype=str(
+            cfg.reward_model.get("torch_dtype", cfg.model.get("torch_dtype", "auto"))
+        ),
         device_map=cfg.reward_model.get("device_map"),
         load_in_4bit=bool(cfg.reward_model.get("load_in_4bit", False)),
         load_in_8bit=bool(cfg.reward_model.get("load_in_8bit", False)),
@@ -386,8 +432,12 @@ def _load_reward_model(cfg, device: torch.device) -> nn.Module:
     return reward_model
 
 
-def _gen_kwargs_from_config(generation: GenerationConfig, tokenizer: Any, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> dict[str, Any]:
-    pad_id = int(tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id)
+def _gen_kwargs_from_config(generation, tokenizer, input_ids, attention_mask):
+    pad_id = int(
+        tokenizer.pad_token_id
+        if tokenizer.pad_token_id is not None
+        else tokenizer.eos_token_id
+    )
     gen_kwargs = dict(
         input_ids=input_ids,
         attention_mask=attention_mask,
@@ -412,14 +462,14 @@ def _gen_kwargs_from_config(generation: GenerationConfig, tokenizer: Any, input_
 
 @torch.inference_mode()
 def _generate_and_score(
-    policy: TokenPolicyWithValue,
-    reward_model: RewardModel,
-    tokenizer: Any,
-    prompts: list[str],
+    policy,
+    reward_model,
+    tokenizer,
+    prompts,
     *,
-    generation: GenerationConfig,
-    device: torch.device,
-) -> list[dict[str, Any]]:
+    generation,
+    device,
+):
     old_padding_side = getattr(tokenizer, "padding_side", "right")
     tokenizer.padding_side = "left"
     encoded = tokenizer(
@@ -436,14 +486,20 @@ def _generate_and_score(
     prompt_width = int(input_ids.size(1))
     prompt_tokens = attention_mask.sum(dim=1).detach().cpu().tolist()
 
-    generated = policy.generate(**_gen_kwargs_from_config(generation, tokenizer, input_ids, attention_mask))
+    generated = policy.generate(
+        **_gen_kwargs_from_config(generation, tokenizer, input_ids, attention_mask)
+    )
     response_ids = generated[:, prompt_width:]
     response_lengths, hit_eos = _response_lengths_and_eos(response_ids, tokenizer)
-    full_attention = _build_full_attention(attention_mask, generated, prompt_width, response_lengths)
+    full_attention = _build_full_attention(
+        attention_mask, generated, prompt_width, response_lengths
+    )
     scores = reward_model(generated, full_attention).detach().float().cpu().tolist()
 
-    rows: list[dict[str, Any]] = []
-    for i, (ids, keep) in enumerate(zip(response_ids, response_lengths.detach().cpu().tolist())):
+    rows = []
+    for i, (ids, keep) in enumerate(
+        zip(response_ids, response_lengths.detach().cpu().tolist())
+    ):
         keep = int(keep)
         text = tokenizer.decode(ids[:keep], skip_special_tokens=True).strip()
         rows.append(
@@ -455,31 +511,40 @@ def _generate_and_score(
                 "prompt_tokens": int(prompt_tokens[i]),
                 "total_tokens": int(full_attention[i].sum().item()),
                 "hit_eos": bool(hit_eos[i].item()),
-                "cap_hit": bool(keep >= int(generation.max_new_tokens) and not bool(hit_eos[i].item())),
+                "cap_hit": bool(
+                    keep >= int(generation.max_new_tokens)
+                    and not bool(hit_eos[i].item())
+                ),
                 "empty": not bool(text.strip()),
             }
         )
     return rows
 
 
-def _numeric(values: list[Any]) -> list[float]:
+def _numeric(values):
     out = []
     for value in values:
         try:
-            if value is not None and not (isinstance(value, float) and math.isnan(value)):
+            if value is not None and not (
+                isinstance(value, float) and math.isnan(value)
+            ):
                 out.append(float(value))
         except (TypeError, ValueError):
             pass
     return out
 
 
-def _stats(values: list[Any]) -> dict[str, float]:
+def _stats(values):
     vals = _numeric(values)
     if not vals:
         return {"mean": 0.0, "median": 0.0, "min": 0.0, "max": 0.0}
     vals_sorted = sorted(vals)
     n = len(vals_sorted)
-    median = vals_sorted[n // 2] if n % 2 else 0.5 * (vals_sorted[n // 2 - 1] + vals_sorted[n // 2])
+    median = (
+        vals_sorted[n // 2]
+        if n % 2
+        else 0.5 * (vals_sorted[n // 2 - 1] + vals_sorted[n // 2])
+    )
     return {
         "mean": float(sum(vals_sorted) / n),
         "median": float(median),
@@ -488,13 +553,17 @@ def _stats(values: list[Any]) -> dict[str, float]:
     }
 
 
-def _winner_for_rewards(rewards: dict[str, float], tie_epsilon: float) -> str:
+def _winner_for_rewards(rewards, tie_epsilon):
     max_reward = max(rewards.values())
-    winners = [label for label, reward in rewards.items() if abs(float(reward) - max_reward) <= tie_epsilon]
+    winners = [
+        label
+        for label, reward in rewards.items()
+        if abs(float(reward) - max_reward) <= tie_epsilon
+    ]
     return winners[0] if len(winners) == 1 else "tie"
 
 
-def _add_comparisons(rows: list[dict[str, Any]], labels: list[str], tie_epsilon: float) -> None:
+def _add_comparisons(rows, labels, tie_epsilon):
     for row in rows:
         rewards = {label: float(row[f"{label}_reward"]) for label in labels}
         row["winner"] = _winner_for_rewards(rewards, tie_epsilon)
@@ -511,29 +580,37 @@ def _add_comparisons(rows: list[dict[str, Any]], labels: list[str], tie_epsilon:
             row[f"winner_{a}_vs_{b}"] = winner
 
 
-def _summarize(rows: list[dict[str, Any]], labels: list[str], tie_epsilon: float) -> dict[str, Any]:
+def _summarize(rows, labels, tie_epsilon):
     if not rows:
         return {"num_examples": 0, "labels": labels}
 
     winner_counts = {label: 0 for label in labels}
     winner_counts["tie"] = 0
-    domain_winner_counts: dict[str, dict[str, int]] = {}
+    domain_winner_counts = {}
     for row in rows:
         winner = str(row.get("winner", "tie"))
         winner_counts[winner] = winner_counts.get(winner, 0) + 1
         domain = str(row.get("domain", "unknown"))
         domain_winner_counts.setdefault(domain, {label: 0 for label in labels})
         domain_winner_counts[domain].setdefault("tie", 0)
-        domain_winner_counts[domain][winner] = domain_winner_counts[domain].get(winner, 0) + 1
+        domain_winner_counts[domain][winner] = (
+            domain_winner_counts[domain].get(winner, 0) + 1
+        )
 
     per_policy = {}
     for label in labels:
         per_policy[label] = {
             "reward": _stats([r.get(f"{label}_reward") for r in rows]),
-            "response_tokens": _stats([r.get(f"{label}_response_tokens") for r in rows]),
+            "response_tokens": _stats(
+                [r.get(f"{label}_response_tokens") for r in rows]
+            ),
             "response_chars": _stats([r.get(f"{label}_response_chars") for r in rows]),
-            "cap_hit_rate": float(sum(1 for r in rows if r.get(f"{label}_cap_hit")) / len(rows)),
-            "empty_rate": float(sum(1 for r in rows if r.get(f"{label}_empty")) / len(rows)),
+            "cap_hit_rate": float(
+                sum(1 for r in rows if r.get(f"{label}_cap_hit")) / len(rows)
+            ),
+            "empty_rate": float(
+                sum(1 for r in rows if r.get(f"{label}_empty")) / len(rows)
+            ),
             "overall_win_rate": float(winner_counts.get(label, 0) / len(rows)),
         }
 
@@ -542,7 +619,7 @@ def _summarize(rows: list[dict[str, Any]], labels: list[str], tie_epsilon: float
     for a, b in itertools.combinations(labels, 2):
         key = f"{a}_vs_{b}"
         counts = {a: 0, b: 0, "tie": 0}
-        domain_counts: dict[str, dict[str, int]] = {}
+        domain_counts = {}
         deltas = []
         for row in rows:
             winner = str(row.get(f"winner_{a}_vs_{b}", "tie"))
@@ -573,7 +650,9 @@ def _summarize(rows: list[dict[str, Any]], labels: list[str], tie_epsilon: float
                 f"{a}_win_rate": counts.get(a, 0) / len(rows),
                 f"{b}_win_rate": counts.get(b, 0) / len(rows),
                 f"mean_delta_{b}_minus_{a}": pairwise[key][f"{b}_minus_{a}"]["mean"],
-                f"median_delta_{b}_minus_{a}": pairwise[key][f"{b}_minus_{a}"]["median"],
+                f"median_delta_{b}_minus_{a}": pairwise[key][f"{b}_minus_{a}"][
+                    "median"
+                ],
             }
         )
 
@@ -589,7 +668,7 @@ def _summarize(rows: list[dict[str, Any]], labels: list[str], tie_epsilon: float
     }
 
 
-def _write_excel_if_available(rows: list[dict[str, Any]], path: Path) -> None:
+def _write_excel_if_available(rows, path):
     try:
         import pandas as pd
 
@@ -599,12 +678,12 @@ def _write_excel_if_available(rows: list[dict[str, Any]], path: Path) -> None:
         return
 
 
-def _compact(text: Any, n: int = 650) -> str:
+def _compact(text, n=650):
     s = str(text or "").replace("\n", "<br>")
     return s if len(s) <= n else s[:n] + "..."
 
 
-def _write_markdown(rows: list[dict[str, Any]], labels: list[str], path: Path, n: int) -> None:
+def _write_markdown(rows, labels, path, n):
     lines = [
         "# Policy-suite evaluation preview\n\n",
         "This Markdown preview is intentionally truncated for readability. ",
@@ -613,17 +692,23 @@ def _write_markdown(rows: list[dict[str, Any]], labels: list[str], path: Path, n
     ]
     show_rows = rows[:n]
     for row in show_rows:
-        lines.append(f"## idx {row.get('idx')} — domain: {row.get('domain')} — winner: {row.get('winner')}\n\n")
+        lines.append(
+            f"## idx {row.get('idx')} — domain: {row.get('domain')} — winner: {row.get('winner')}\n\n"
+        )
         lines.append(f"**Prompt**\n\n{_compact(row.get('prompt'), 1000)}\n\n")
         for label in labels:
-            lines.append(f"**{label} reward:** `{float(row.get(f'{label}_reward', 0.0)):.4f}`; ")
-            lines.append(f"tokens: `{int(row.get(f'{label}_response_tokens', 0))}`; cap_hit: `{row.get(f'{label}_cap_hit')}`\n\n")
+            lines.append(
+                f"**{label} reward:** `{float(row.get(f'{label}_reward', 0.0)):.4f}`; "
+            )
+            lines.append(
+                f"tokens: `{int(row.get(f'{label}_response_tokens', 0))}`; cap_hit: `{row.get(f'{label}_cap_hit')}`\n\n"
+            )
             lines.append(f"{_compact(row.get(f'{label}_response'), 1200)}\n\n")
         lines.append("---\n\n")
     path.write_text("".join(lines), encoding="utf-8")
 
 
-def _write_plots(rows: list[dict[str, Any]], labels: list[str], output_dir: Path) -> None:
+def _write_plots(rows, labels, output_dir):
     if not rows:
         return
     try:
@@ -667,7 +752,9 @@ def _write_plots(rows: list[dict[str, Any]], labels: list[str], output_dir: Path
     plt.close(fig)
 
     # Overall winner counts.
-    counts = {label: sum(1 for r in rows if r.get("winner") == label) for label in labels}
+    counts = {
+        label: sum(1 for r in rows if r.get("winner") == label) for label in labels
+    }
     counts["tie"] = sum(1 for r in rows if r.get("winner") == "tie")
     fig = plt.figure(figsize=(7, 4))
     ax = fig.add_subplot(111)
@@ -707,7 +794,10 @@ def _write_plots(rows: list[dict[str, Any]], labels: list[str], output_dir: Path
             rates = []
             for domain in domains:
                 subset = [r for r in rows if str(r.get("domain", "unknown")) == domain]
-                rates.append(sum(1 for r in subset if r.get("winner") == label) / max(len(subset), 1))
+                rates.append(
+                    sum(1 for r in subset if r.get("winner") == label)
+                    / max(len(subset), 1)
+                )
             offsets = [v + (j - (len(labels) - 1) / 2) * width for v in x]
             ax.bar(offsets, rates, width=width, label=label)
         ax.set_xticks(x)
@@ -721,12 +811,14 @@ def _write_plots(rows: list[dict[str, Any]], labels: list[str], output_dir: Path
         plt.close(fig)
 
 
-def _write_summary_markdown(summary: dict[str, Any], output_dir: Path) -> None:
+def _write_summary_markdown(summary, output_dir):
     lines = ["# Policy-suite evaluation summary\n\n"]
     lines.append(f"Examples: `{summary.get('num_examples', 0)}`\n\n")
     lines.append(f"Policies: `{', '.join(summary.get('labels', []))}`\n\n")
     lines.append("## Overall winner counts\n\n")
-    lines.append("| policy | wins | win rate | mean reward | median response tokens | cap-hit rate | empty rate |\n")
+    lines.append(
+        "| policy | wins | win rate | mean reward | median response tokens | cap-hit rate | empty rate |\n"
+    )
     lines.append("|---|---:|---:|---:|---:|---:|---:|\n")
     n = max(int(summary.get("num_examples", 0)), 1)
     for label in summary.get("labels", []):
@@ -742,7 +834,9 @@ def _write_summary_markdown(summary: dict[str, Any], output_dir: Path) -> None:
         ties = int(summary["winner_counts"].get("tie", 0))
         lines.append(f"| tie | {ties} | {ties / n:.4f} |  |  |  |  |\n")
     lines.append("\n## Pairwise comparisons\n\n")
-    lines.append("| comparison | left wins | right wins | ties | right win rate | mean right-left reward delta |\n")
+    lines.append(
+        "| comparison | left wins | right wins | ties | right win rate | mean right-left reward delta |\n"
+    )
     lines.append("|---|---:|---:|---:|---:|---:|\n")
     for comp, data in summary.get("pairwise", {}).items():
         a, b = data["a"], data["b"]
@@ -752,10 +846,12 @@ def _write_summary_markdown(summary: dict[str, Any], output_dir: Path) -> None:
             f"| {a} vs {b} | {int(counts.get(a, 0))} | {int(counts.get(b, 0))} | {int(counts.get('tie', 0))} | "
             f"{data.get(f'{b}_win_rate', 0.0):.4f} | {data.get(delta_key, {}).get('mean', 0.0):.4f} |\n"
         )
-    output_dir.joinpath("policy_suite_summary.md").write_text("".join(lines), encoding="utf-8")
+    output_dir.joinpath("policy_suite_summary.md").write_text(
+        "".join(lines), encoding="utf-8"
+    )
 
 
-def _atomic_write_text(path: Path, text: str) -> None:
+def _atomic_write_text(path, text):
     """Write text atomically enough for Colab/Drive-style interrupted runs."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -763,7 +859,7 @@ def _atomic_write_text(path: Path, text: str) -> None:
     tmp.replace(path)
 
 
-def _append_jsonl(path: Path, records: list[dict[str, Any]]) -> None:
+def _append_jsonl(path, records):
     """Append records to a JSONL file and flush to disk immediately."""
     if not records:
         return
@@ -780,9 +876,9 @@ def _append_jsonl(path: Path, records: list[dict[str, Any]]) -> None:
             pass
 
 
-def _read_jsonl_by_idx(path: Path, *, expected_signature: str | None = None) -> dict[int, dict[str, Any]]:
+def _read_jsonl_by_idx(path, *, expected_signature=None):
     """Read a possibly-duplicated JSONL shard. Later rows overwrite earlier rows."""
-    out: dict[int, dict[str, Any]] = {}
+    out = {}
     if not path.exists():
         return out
     with path.open("r", encoding="utf-8") as f:
@@ -792,7 +888,10 @@ def _read_jsonl_by_idx(path: Path, *, expected_signature: str | None = None) -> 
                 continue
             try:
                 rec = json.loads(line)
-                if expected_signature is not None and rec.get("_eval_signature") != expected_signature:
+                if (
+                    expected_signature is not None
+                    and rec.get("_eval_signature") != expected_signature
+                ):
                     continue
                 out[int(rec["idx"])] = rec
             except Exception:
@@ -801,7 +900,7 @@ def _read_jsonl_by_idx(path: Path, *, expected_signature: str | None = None) -> 
     return out
 
 
-def _evaluation_signature(cfg: Any, specs: list[dict[str, Any]], generation: GenerationConfig, records: list[dict[str, Any]]) -> str:
+def _evaluation_signature(cfg, specs, generation, records):
     """Fingerprint inputs that determine cached policy responses and rewards."""
     record_digest = hashlib.sha256()
     for record in records:
@@ -826,42 +925,51 @@ def _evaluation_signature(cfg: Any, specs: list[dict[str, Any]], generation: Gen
         "generation": asdict(generation),
         "records_sha256": record_digest.hexdigest(),
     }
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    encoded = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, default=str
+    ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _policy_shard_path(output_dir: Path, label: str, partial_subdir: str) -> Path:
+def _policy_shard_path(output_dir, label, partial_subdir):
     return output_dir / partial_subdir / f"{_safe_label(label)}.jsonl"
 
 
 def _write_progress_manifest(
-    output_dir: Path,
+    output_dir,
     *,
-    eval_signature: str,
-    labels: list[str],
-    completed_by_label: dict[str, int],
-    total_records: int,
-    partial_subdir: str,
-) -> None:
+    eval_signature,
+    labels,
+    completed_by_label,
+    total_records,
+    partial_subdir,
+):
     manifest = {
         "eval_signature": eval_signature,
         "total_records": int(total_records),
         "partial_subdir": partial_subdir,
         "labels": labels,
-        "completed_by_label": {label: int(completed_by_label.get(label, 0)) for label in labels},
-        "complete": all(int(completed_by_label.get(label, 0)) >= int(total_records) for label in labels),
+        "completed_by_label": {
+            label: int(completed_by_label.get(label, 0)) for label in labels
+        },
+        "complete": all(
+            int(completed_by_label.get(label, 0)) >= int(total_records)
+            for label in labels
+        ),
     }
-    _atomic_write_text(output_dir / "policy_suite_progress.json", json.dumps(manifest, indent=2))
+    _atomic_write_text(
+        output_dir / "policy_suite_progress.json", json.dumps(manifest, indent=2)
+    )
 
 
 def _finalize_policy_suite_outputs(
     *,
-    output_dir: Path,
-    rows: list[dict[str, Any]],
-    labels: list[str],
-    tie_epsilon: float,
-    num_demo_rows: int,
-) -> None:
+    output_dir,
+    rows,
+    labels,
+    tie_epsilon,
+    num_demo_rows,
+):
     """Write final combined artifacts from already-populated rows."""
     missing = []
     for label in labels:
@@ -893,18 +1001,21 @@ def _finalize_policy_suite_outputs(
 
 
 def run_policy_suite_eval(
-    config_path: str | Path,
+    config_path,
     *,
-    output_dir: str | Path | None = None,
-    override_values: list[str] | None = None,
-) -> Path:
+    output_dir=None,
+    override_values=None,
+):
     cfg = load_config(config_path)
     if override_values:
         from .config import apply_overrides
         from .trl_common import parse_cli_overrides
 
         cfg = apply_overrides(cfg, parse_cli_overrides(override_values))
-    output_dir = Path(output_dir or cfg.eval.get("output_dir", "outputs/rlhf/qwen25_05b_helpsteer3_eval_suite"))
+    output_dir = Path(
+        output_dir
+        or cfg.eval.get("output_dir", "outputs/rlhf/qwen25_05b_helpsteer3_eval_suite")
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "plots").mkdir(exist_ok=True)
     save_config(cfg, output_dir / "config_resolved.yaml")
@@ -950,7 +1061,7 @@ def run_policy_suite_eval(
     finalize_only = bool(cfg.eval.get("finalize_only", False))
     partial_subdir = str(cfg.eval.get("partial_subdir", "partial_policy_outputs"))
 
-    rows: list[dict[str, Any]] = []
+    rows = []
     for idx, record in enumerate(records):
         rows.append(
             {
@@ -962,7 +1073,7 @@ def run_policy_suite_eval(
         )
 
     # Hydrate rows from per-policy shards written by previous interrupted runs.
-    completed_by_label: dict[str, int] = {}
+    completed_by_label = {}
     for label in labels:
         existing = (
             _read_jsonl_by_idx(
@@ -977,7 +1088,9 @@ def run_policy_suite_eval(
                 for key, value in rec.items():
                     if key not in {"idx", "_eval_signature"}:
                         rows[idx][key] = value
-        completed_by_label[label] = sum(1 for row in rows if f"{label}_response" in row and f"{label}_reward" in row)
+        completed_by_label[label] = sum(
+            1 for row in rows if f"{label}_response" in row and f"{label}_reward" in row
+        )
 
     _write_progress_manifest(
         output_dir,
@@ -1001,7 +1114,7 @@ def run_policy_suite_eval(
 
     reward_model = _load_reward_model(cfg, device)
 
-    def fill_policy_outputs(policy: TokenPolicyWithValue, label: str) -> None:
+    def fill_policy_outputs(policy, label):
         shard_path = _policy_shard_path(output_dir, label, partial_subdir)
         pending_indices = [
             idx
@@ -1024,8 +1137,15 @@ def run_policy_suite_eval(
         for batch_number, offset in enumerate(pbar, start=1):
             batch_indices = pending_indices[offset : offset + batch_size]
             batch_prompts = [prompts[i] for i in batch_indices]
-            outputs = _generate_and_score(policy, reward_model, tokenizer, batch_prompts, generation=generation, device=device)
-            shard_records: list[dict[str, Any]] = []
+            outputs = _generate_and_score(
+                policy,
+                reward_model,
+                tokenizer,
+                batch_prompts,
+                generation=generation,
+                device=device,
+            )
+            shard_records = []
             for idx, out in zip(batch_indices, outputs):
                 row = rows[idx]
                 update = {
@@ -1045,7 +1165,11 @@ def run_policy_suite_eval(
                 row.update(update)
                 shard_records.append({"_eval_signature": eval_signature, **update})
             _append_jsonl(shard_path, shard_records)
-            completed_by_label[label] = sum(1 for row in rows if f"{label}_response" in row and f"{label}_reward" in row)
+            completed_by_label[label] = sum(
+                1
+                for row in rows
+                if f"{label}_response" in row and f"{label}_reward" in row
+            )
             _write_progress_manifest(
                 output_dir,
                 eval_signature=eval_signature,
@@ -1056,15 +1180,21 @@ def run_policy_suite_eval(
             )
             pbar.set_postfix(done=completed_by_label[label], total=len(rows))
             completed = completed_by_label[label]
-            if batch_number == 1 or batch_number % progress_every == 0 or completed == total_rows:
+            if (
+                batch_number == 1
+                or batch_number % progress_every == 0
+                or completed == total_rows
+            ):
                 print(
                     f"[eval {label}] {completed}/{total_rows} complete "
                     f"({100.0 * completed / max(total_rows, 1):.1f}%)",
                     flush=True,
                 )
 
-    def label_complete(label: str) -> bool:
-        return all(f"{label}_response" in row and f"{label}_reward" in row for row in rows)
+    def label_complete(label):
+        return all(
+            f"{label}_response" in row and f"{label}_reward" in row for row in rows
+        )
 
     if load_mode == "resident":
         policies = [
@@ -1078,7 +1208,9 @@ def run_policy_suite_eval(
         for spec in specs:
             label = spec["label"]
             if label_complete(label):
-                print(f"eval {label}: already complete ({len(rows)}/{len(rows)}); skipping load")
+                print(
+                    f"eval {label}: already complete ({len(rows)}/{len(rows)}); skipping load"
+                )
                 continue
             policy = _load_policy(cfg, spec, device, tokenizer)
             fill_policy_outputs(policy, label)

@@ -4,9 +4,13 @@ import argparse
 from _bootstrap import ensure_repo_root_on_path
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Prepare response-safe HelpSteer3 datasets for TRL.")
-    parser.add_argument("--config", default="configs/trl/qwen25_05b_helpsteer3_sft.yaml")
+def main():
+    parser = argparse.ArgumentParser(
+        description="Prepare response-safe HelpSteer3 datasets for TRL."
+    )
+    parser.add_argument(
+        "--config", default="configs/trl/qwen25_05b_helpsteer3_sft.yaml"
+    )
     parser.add_argument("--set", action="append", default=[], metavar="KEY=VALUE")
     args = parser.parse_args()
     ensure_repo_root_on_path()

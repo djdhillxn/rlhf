@@ -1,19 +1,16 @@
-from __future__ import annotations
-
 import json
 import os
 import shutil
 from pathlib import Path
-from typing import Any
 
 import yaml
 
-from .config import DotDict, apply_overrides, load_config
+from .config import apply_overrides, load_config
 
 
-def parse_cli_overrides(values: list[str] | None) -> dict[str, Any]:
+def parse_cli_overrides(values):
     """Parse repeated KEY=VALUE arguments using YAML scalar semantics."""
-    overrides: dict[str, Any] = {}
+    overrides = {}
     for raw in values or []:
         if "=" not in raw:
             raise ValueError(f"Override must use KEY=VALUE syntax, got {raw!r}")
@@ -25,19 +22,21 @@ def parse_cli_overrides(values: list[str] | None) -> dict[str, Any]:
     return overrides
 
 
-def load_config_with_overrides(path: str | Path, values: list[str] | None = None) -> DotDict:
+def load_config_with_overrides(path, values=None):
     cfg = load_config(path)
     overrides = parse_cli_overrides(values)
     return apply_overrides(cfg, overrides) if overrides else cfg
 
 
-def write_json(value: Any, path: str | Path) -> None:
+def write_json(value, path):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
 
 
-def resolve_dtype(name: str | None):
+def resolve_dtype(name):
     import torch
 
     if name is None or str(name).lower() == "auto":
@@ -56,7 +55,7 @@ def resolve_dtype(name: str | None):
         raise ValueError(f"Unsupported dtype {name!r}") from exc
 
 
-def ensure_distinct_pad_token(tokenizer: Any, pad_token: str = "<|pad|>") -> int:
+def ensure_distinct_pad_token(tokenizer, pad_token="<|pad|>"):
     """Guarantee a real padding token rather than aliasing EOS as padding."""
     eos_id = tokenizer.eos_token_id
     if tokenizer.pad_token_id is None or tokenizer.pad_token_id == eos_id:
@@ -68,11 +67,15 @@ def ensure_distinct_pad_token(tokenizer: Any, pad_token: str = "<|pad|>") -> int
     if tokenizer.pad_token_id is None:
         raise ValueError("Tokenizer still has no pad token after setup.")
     if eos_id is not None and tokenizer.pad_token_id == eos_id:
-        raise ValueError("PAD and EOS must have different token IDs for the TRL pipeline.")
+        raise ValueError(
+            "PAD and EOS must have different token IDs for the TRL pipeline."
+        )
     return int(tokenizer.pad_token_id)
 
 
-def load_tokenizer(model_name_or_path: str, *, trust_remote_code: bool = False, padding_side: str = "right"):
+def load_tokenizer(
+    model_name_or_path, *, trust_remote_code=False, padding_side="right"
+):
     from transformers import AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(
@@ -84,13 +87,13 @@ def load_tokenizer(model_name_or_path: str, *, trust_remote_code: bool = False, 
     return tokenizer
 
 
-def resize_embeddings_if_needed(model: Any, tokenizer: Any) -> None:
+def resize_embeddings_if_needed(model, tokenizer):
     embeddings = model.get_input_embeddings()
     if embeddings is not None and len(tokenizer) != embeddings.num_embeddings:
         model.resize_token_embeddings(len(tokenizer))
 
 
-def build_lora_config(cfg: dict[str, Any], *, modules_to_save: list[str] | None = None):
+def build_lora_config(cfg, *, modules_to_save=None):
     from peft import LoraConfig
 
     return LoraConfig(
@@ -102,14 +105,22 @@ def build_lora_config(cfg: dict[str, Any], *, modules_to_save: list[str] | None 
         target_modules=list(
             cfg.get(
                 "target_modules",
-                ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+                [
+                    "q_proj",
+                    "k_proj",
+                    "v_proj",
+                    "o_proj",
+                    "gate_proj",
+                    "up_proj",
+                    "down_proj",
+                ],
             )
         ),
         modules_to_save=modules_to_save,
     )
 
 
-def trainer_report_to(value: Any) -> list[str]:
+def trainer_report_to(value):
     if value in {None, "", "none", "None", False}:
         return []
     if isinstance(value, str):
@@ -117,7 +128,7 @@ def trainer_report_to(value: Any) -> list[str]:
     return [str(item) for item in value]
 
 
-def maybe_sync_tree(source: str | Path, destination: str | Path | None) -> None:
+def maybe_sync_tree(source, destination):
     if not destination:
         return
     source = Path(source)
@@ -128,9 +139,9 @@ def maybe_sync_tree(source: str | Path, destination: str | Path | None) -> None:
     shutil.copytree(source, destination, dirs_exist_ok=True)
 
 
-def common_training_kwargs(cfg: dict[str, Any]) -> dict[str, Any]:
+def common_training_kwargs(cfg):
     """Translate the shared YAML training fields into Transformers arguments."""
-    kwargs: dict[str, Any] = {
+    kwargs = {
         "output_dir": str(cfg["output_dir"]),
         "seed": int(cfg.get("seed", 839)),
         "data_seed": int(cfg.get("data_seed", cfg.get("seed", 839))),
@@ -165,3 +176,34 @@ def common_training_kwargs(cfg: dict[str, Any]) -> dict[str, Any]:
     if cfg.get("logging_first_step") is not None:
         kwargs["logging_first_step"] = bool(cfg["logging_first_step"])
     return kwargs
+
+
+def _checkpoint_sync_callback(destination):
+    from transformers import TrainerCallback
+
+    class CheckpointSyncCallback(TrainerCallback):
+        """Copy completed Trainer checkpoints to persistent storage after each save."""
+
+        def __init__(self, destination):
+            self.destination = Path(destination).expanduser() if destination else None
+
+        def on_save(self, args, state, control, **kwargs):
+            if self.destination is None or not state.is_world_process_zero:
+                return control
+            checkpoint = Path(args.output_dir) / f"checkpoint-{state.global_step}"
+            if not checkpoint.exists():
+                return control
+            target = self.destination / checkpoint.name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(checkpoint, target, dirs_exist_ok=True)
+            (self.destination / "latest_checkpoint.txt").write_text(
+                target.name + "\n", encoding="utf-8"
+            )
+            return control
+
+    return CheckpointSyncCallback(destination)
+
+
+def build_callbacks(cfg):
+    destination = cfg.get("checkpoint_sync_dir")
+    return [_checkpoint_sync_callback(destination)] if destination else []

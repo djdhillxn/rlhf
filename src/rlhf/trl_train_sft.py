@@ -1,12 +1,9 @@
-from __future__ import annotations
-
 from pathlib import Path
-from typing import Any
 
 from .config import save_config
 from .experiment import finalize_experiment, initialize_experiment
-from .trl_callbacks import build_callbacks
 from .trl_common import (
+    build_callbacks,
     build_lora_config,
     common_training_kwargs,
     load_tokenizer,
@@ -17,7 +14,7 @@ from .trl_data import load_stage_dataset
 from .trl_models import load_causal_model, merge_peft_model
 
 
-def run_trl_sft(cfg: dict[str, Any], *, config_path: str | Path | None = None) -> Path:
+def run_trl_sft(cfg, *, config_path=None):
     from trl import SFTConfig, SFTTrainer
 
     output_dir = Path(cfg["train"]["output_dir"])
@@ -36,19 +33,27 @@ def run_trl_sft(cfg: dict[str, Any], *, config_path: str | Path | None = None) -
         trust_remote_code=bool(cfg["model"].get("trust_remote_code", False)),
         padding_side="right",
     )
-    train_dataset = load_stage_dataset(cfg["data"]["cache_dir"], "sft", cfg["data"].get("train_split", "train"))
+    train_dataset = load_stage_dataset(
+        cfg["data"]["cache_dir"], "sft", cfg["data"].get("train_split", "train")
+    )
     eval_dataset = load_stage_dataset(
         cfg["data"]["cache_dir"], "sft", cfg["data"].get("eval_split", "validation")
     )
     if cfg["data"].get("max_train_samples"):
-        train_dataset = train_dataset.select(range(min(len(train_dataset), int(cfg["data"]["max_train_samples"]))))
+        train_dataset = train_dataset.select(
+            range(min(len(train_dataset), int(cfg["data"]["max_train_samples"])))
+        )
     if cfg["data"].get("max_eval_samples"):
-        eval_dataset = eval_dataset.select(range(min(len(eval_dataset), int(cfg["data"]["max_eval_samples"]))))
+        eval_dataset = eval_dataset.select(
+            range(min(len(eval_dataset), int(cfg["data"]["max_eval_samples"])))
+        )
 
     model = load_causal_model(str(cfg["model"]["name"]), tokenizer, cfg["model"])
     lora_cfg = dict(cfg.get("lora", {}))
     if float(lora_cfg.get("lora_dropout", 0.0)) != 0.0:
-        raise ValueError("The TRL pipeline requires lora_dropout: 0.0 for deterministic PPO initialization.")
+        raise ValueError(
+            "The TRL pipeline requires lora_dropout: 0.0 for deterministic PPO initialization."
+        )
 
     training_kwargs = common_training_kwargs(cfg["train"])
     training_args = SFTConfig(

@@ -4,9 +4,13 @@ import argparse
 from _bootstrap import ensure_repo_root_on_path
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Train a LoRA SFT warm-start policy on HelpSteer3 chosen responses.")
-    parser.add_argument("--config", default="configs/rlhf/qwen25_05b_helpsteer3_sft.yaml")
+def main():
+    parser = argparse.ArgumentParser(
+        description="Train a LoRA SFT warm-start policy on HelpSteer3 chosen responses."
+    )
+    parser.add_argument(
+        "--config", default="configs/rlhf/qwen25_05b_helpsteer3_sft.yaml"
+    )
     parser.add_argument("--output-dir", default=None)
     args = parser.parse_args()
     ensure_repo_root_on_path()

@@ -1,4 +1,3 @@
-from typing import Any
 import re
 
 
@@ -10,18 +9,20 @@ ROLE_ALIASES = {
     "system": "system",
 }
 
-_CHAT_START_RE = re.compile(r"<\|im_start\|>\s*(system|user|assistant)\s*", re.IGNORECASE)
+_CHAT_START_RE = re.compile(
+    r"<\|im_start\|>\s*(system|user|assistant)\s*", re.IGNORECASE
+)
 _CHAT_END = "<|im_end|>"
 
 
-def _stringify_content(value: Any) -> str:
+def _stringify_content(value):
     if value is None:
         return ""
     if isinstance(value, str):
         return value
     if isinstance(value, list):
         # Some chat datasets store multimodal-ish content lists. Keep text parts.
-        parts: list[str] = []
+        parts = []
         for item in value:
             if isinstance(item, dict):
                 text = item.get("text") or item.get("content") or item.get("value")
@@ -33,7 +34,7 @@ def _stringify_content(value: Any) -> str:
     return str(value)
 
 
-def _parse_embedded_qwen_chat(text: str) -> list[dict[str, str]] | None:
+def _parse_embedded_qwen_chat(text):
     """Parse strings that already contain Qwen-style chat markers.
 
     Some HelpSteer3 rows are OpenAI-message-like, but a small subset contains
@@ -51,7 +52,7 @@ def _parse_embedded_qwen_chat(text: str) -> list[dict[str, str]] | None:
     matches = list(_CHAT_START_RE.finditer(text))
     if not matches:
         return None
-    messages: list[dict[str, str]] = []
+    messages = []
     for i, match in enumerate(matches):
         role = ROLE_ALIASES.get(match.group(1).lower(), match.group(1).lower())
         content_start = match.end()
@@ -68,7 +69,7 @@ def _parse_embedded_qwen_chat(text: str) -> list[dict[str, str]] | None:
     return messages or None
 
 
-def normalize_messages(context: Any) -> list[dict[str, str]]:
+def normalize_messages(context):
     """Normalize HelpSteer-style context objects into OpenAI/Qwen chat messages.
 
     Handles the common shapes:
@@ -83,7 +84,12 @@ def normalize_messages(context: Any) -> list[dict[str, str]]:
             if key in context:
                 return normalize_messages(context[key])
         # Last-resort single user prompt from dict content-ish fields.
-        text = context.get("content") or context.get("prompt") or context.get("value") or str(context)
+        text = (
+            context.get("content")
+            or context.get("prompt")
+            or context.get("value")
+            or str(context)
+        )
         text = _stringify_content(text).strip()
         parsed = _parse_embedded_qwen_chat(text)
         if parsed is not None:
@@ -104,7 +110,7 @@ def normalize_messages(context: Any) -> list[dict[str, str]]:
             return parsed
         return [{"role": "user", "content": text}]
 
-    messages: list[dict[str, str]] = []
+    messages = []
     for idx, item in enumerate(context):
         if isinstance(item, str):
             parsed = _parse_embedded_qwen_chat(item)
@@ -114,8 +120,15 @@ def normalize_messages(context: Any) -> list[dict[str, str]]:
             role = "user" if idx % 2 == 0 else "assistant"
             content = item
         elif isinstance(item, dict):
-            role_raw = item.get("role") or item.get("from") or item.get("speaker") or item.get("author")
-            role = ROLE_ALIASES.get(str(role_raw).lower(), "user" if idx % 2 == 0 else "assistant")
+            role_raw = (
+                item.get("role")
+                or item.get("from")
+                or item.get("speaker")
+                or item.get("author")
+            )
+            role = ROLE_ALIASES.get(
+                str(role_raw).lower(), "user" if idx % 2 == 0 else "assistant"
+            )
             content = item.get("content")
             if content is None:
                 content = item.get("value") or item.get("text") or item.get("message")
@@ -138,7 +151,7 @@ def normalize_messages(context: Any) -> list[dict[str, str]]:
     return messages or [{"role": "user", "content": ""}]
 
 
-def strip_trailing_assistant(messages: list[dict[str, str]]) -> list[dict[str, str]]:
+def strip_trailing_assistant(messages):
     """Remove final assistant turns if present.
 
     Preference datasets sometimes put the candidate answer in the context. For
@@ -153,9 +166,11 @@ def strip_trailing_assistant(messages: list[dict[str, str]]) -> list[dict[str, s
     return out
 
 
-def render_prompt(tokenizer: Any, context: Any, *, add_generation_prompt: bool = True) -> str:
+def render_prompt(tokenizer, context, *, add_generation_prompt=True):
     messages = normalize_messages(context)
-    if hasattr(tokenizer, "apply_chat_template") and getattr(tokenizer, "chat_template", None):
+    if hasattr(tokenizer, "apply_chat_template") and getattr(
+        tokenizer, "chat_template", None
+    ):
         return tokenizer.apply_chat_template(
             messages,
             tokenize=False,
@@ -163,7 +178,7 @@ def render_prompt(tokenizer: Any, context: Any, *, add_generation_prompt: bool =
         )
 
     # Fallback format for tokenizers without a chat template.
-    chunks: list[str] = []
+    chunks = []
     for msg in messages:
         role = msg["role"].capitalize()
         chunks.append(f"{role}: {msg['content']}")
@@ -172,7 +187,7 @@ def render_prompt(tokenizer: Any, context: Any, *, add_generation_prompt: bool =
     return "\n".join(chunks).strip() + "\n"
 
 
-def render_prompt_with_response(tokenizer: Any, context: Any, response: str) -> str:
+def render_prompt_with_response(tokenizer, context, response):
     prompt = render_prompt(tokenizer, context, add_generation_prompt=True)
     eos = tokenizer.eos_token or ""
     return prompt + response.strip() + eos

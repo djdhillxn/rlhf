@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-from __future__ import annotations
 
 import argparse
 import os
@@ -28,7 +27,7 @@ REQUIRED_PACKAGES = (
 )
 
 
-def _check_versions(errors: list[str]) -> None:
+def _check_versions(errors):
     print(f"Python: {sys.version.split()[0]} ({sys.executable})")
     print(f"Platform: {platform.platform()}")
     for package in REQUIRED_PACKAGES:
@@ -40,7 +39,7 @@ def _check_versions(errors: list[str]) -> None:
         print(f"{package}: {installed}")
 
 
-def _check_imports(errors: list[str]) -> None:
+def _check_imports(errors):
     for module in (
         "torch",
         "transformers",
@@ -55,7 +54,7 @@ def _check_imports(errors: list[str]) -> None:
             errors.append(f"import {module} failed: {type(exc).__name__}: {exc}")
 
 
-def _check_trl_apis(errors: list[str]) -> None:
+def _check_trl_apis(errors):
     try:
         from trl import RewardConfig, RewardTrainer, SFTConfig, SFTTrainer
         from trl.experimental.ppo import PPOConfig, PPOTrainer
@@ -66,7 +65,7 @@ def _check_trl_apis(errors: list[str]) -> None:
     print("TRL trainer APIs:", ", ".join(item.__name__ for item in names))
 
 
-def _check_cuda(errors: list[str], require_cuda: bool) -> None:
+def _check_cuda(errors, require_cuda):
     try:
         import torch
     except Exception:
@@ -79,7 +78,7 @@ def _check_cuda(errors: list[str], require_cuda: bool) -> None:
         errors.append("CUDA is unavailable; select a GPU runtime in Colab")
 
 
-def _check_directory(path: Path, label: str, errors: list[str]) -> None:
+def _check_directory(path, label, errors):
     try:
         path.mkdir(parents=True, exist_ok=True)
         probe = path / ".rlhf_write_probe"
@@ -90,10 +89,14 @@ def _check_directory(path: Path, label: str, errors: list[str]) -> None:
         errors.append(f"{label} is not writable ({path}): {type(exc).__name__}: {exc}")
 
 
-def _check_data(cfg, stage: str, errors: list[str]) -> None:
+def _check_data(cfg, stage, errors):
     cache_dir = Path(str(cfg.data.cache_dir))
     for split_key in ("train_split", "eval_split"):
-        split = str(cfg.data.get(split_key, "train" if split_key == "train_split" else "validation"))
+        split = str(
+            cfg.data.get(
+                split_key, "train" if split_key == "train_split" else "validation"
+            )
+        )
         path = cache_dir / stage / split
         if path.exists():
             print(f"{stage} {split}: found ({path})")
@@ -104,7 +107,7 @@ def _check_data(cfg, stage: str, errors: list[str]) -> None:
             )
 
 
-def _tokenizer_source(cfg, stage: str) -> str:
+def _tokenizer_source(cfg, stage):
     if stage == "sft":
         return str(cfg.model.name)
     if stage == "reward":
@@ -112,7 +115,7 @@ def _tokenizer_source(cfg, stage: str) -> str:
     return str(cfg.model.policy_model_path)
 
 
-def _check_tokenizer(cfg, stage: str, errors: list[str]) -> None:
+def _check_tokenizer(cfg, stage, errors):
     try:
         from rlhf.trl_common import load_tokenizer
 
@@ -126,10 +129,15 @@ def _check_tokenizer(cfg, stage: str, errors: list[str]) -> None:
         print(f"EOS token/id: {tokenizer.eos_token!r} / {tokenizer.eos_token_id}")
         print(f"PAD token/id: {tokenizer.pad_token!r} / {tokenizer.pad_token_id}")
         if tokenizer.eos_token_id is None:
-            errors.append("Tokenizer has no EOS token; PPO stop_token=eos would be ill-defined.")
+            errors.append(
+                "Tokenizer has no EOS token; PPO stop_token=eos would be ill-defined."
+            )
         if tokenizer.pad_token_id is None:
             errors.append("Tokenizer has no PAD token after setup.")
-        if tokenizer.eos_token_id is not None and tokenizer.pad_token_id == tokenizer.eos_token_id:
+        if (
+            tokenizer.eos_token_id is not None
+            and tokenizer.pad_token_id == tokenizer.eos_token_id
+        ):
             errors.append("Tokenizer PAD and EOS token IDs must be distinct.")
         if "qwen" in source.lower() and tokenizer.eos_token != "<|im_end|>":
             print(
@@ -140,8 +148,10 @@ def _check_tokenizer(cfg, stage: str, errors: list[str]) -> None:
         errors.append(f"tokenizer check failed: {type(exc).__name__}: {exc}")
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Validate a TRL/Colab runtime before starting an RLHF stage.")
+def main():
+    parser = argparse.ArgumentParser(
+        description="Validate a TRL/Colab runtime before starting an RLHF stage."
+    )
     parser.add_argument("--config", required=True)
     parser.add_argument("--stage", choices=("sft", "reward", "ppo"), required=True)
     parser.add_argument("--set", action="append", default=[], metavar="KEY=VALUE")
@@ -152,7 +162,7 @@ def main() -> None:
     from rlhf.trl_common import load_config_with_overrides
 
     cfg = load_config_with_overrides(args.config, args.set)
-    errors: list[str] = []
+    errors = []
     _check_versions(errors)
     _check_imports(errors)
     _check_trl_apis(errors)

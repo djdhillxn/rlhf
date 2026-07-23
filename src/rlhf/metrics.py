@@ -6,24 +6,25 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Iterable
 
 import torch
 
 
-def masked_mean(x: torch.Tensor, mask: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+def masked_mean(x, mask, eps=1e-8):
     if x.shape != mask.shape:
-        raise ValueError(f"masked_mean shape mismatch: x.shape={tuple(x.shape)} mask.shape={tuple(mask.shape)}")
+        raise ValueError(
+            f"masked_mean shape mismatch: x.shape={tuple(x.shape)} mask.shape={tuple(mask.shape)}"
+        )
     mask_f = mask.to(dtype=x.dtype)
     return (x * mask_f).sum() / mask_f.sum().clamp_min(eps)
 
 
-def masked_var(x: torch.Tensor, mask: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+def masked_var(x, mask, eps=1e-8):
     mean = masked_mean(x, mask, eps=eps)
     return masked_mean((x - mean) ** 2, mask, eps=eps)
 
 
-def explained_variance(y_pred: torch.Tensor, y_true: torch.Tensor, mask: torch.Tensor | None = None) -> float:
+def explained_variance(y_pred, y_true, mask=None):
     with torch.no_grad():
         if mask is not None:
             if y_pred.shape != mask.shape or y_true.shape != mask.shape:
@@ -39,21 +40,24 @@ def explained_variance(y_pred: torch.Tensor, y_true: torch.Tensor, mask: torch.T
         var_y = torch.var(y_true.float(), unbiased=False)
         if var_y.item() == 0:
             return float("nan")
-        return float(1.0 - torch.var((y_true - y_pred).float(), unbiased=False).item() / var_y.item())
+        return float(
+            1.0
+            - torch.var((y_true - y_pred).float(), unbiased=False).item() / var_y.item()
+        )
 
 
-def append_jsonl(record: dict[str, Any], path: str | Path) -> None:
+def append_jsonl(record, path):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-def read_jsonl(path: str | Path) -> list[dict[str, Any]]:
+def read_jsonl(path):
     path = Path(path)
     if not path.exists():
         return []
-    rows: list[dict[str, Any]] = []
+    rows = []
     with path.open("r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -62,14 +66,14 @@ def read_jsonl(path: str | Path) -> list[dict[str, Any]]:
     return rows
 
 
-def write_json(record: dict[str, Any], path: str | Path) -> None:
+def write_json(record, path):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         json.dump(record, f, ensure_ascii=False, indent=2)
 
 
-def write_csv(records: Iterable[dict[str, Any]], path: str | Path) -> None:
+def write_csv(records, path):
     records = list(records)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -83,11 +87,11 @@ def write_csv(records: Iterable[dict[str, Any]], path: str | Path) -> None:
         writer.writerows(records)
 
 
-def jsonl_to_csv(jsonl_path: str | Path, csv_path: str | Path) -> None:
+def jsonl_to_csv(jsonl_path, csv_path):
     write_csv(read_jsonl(jsonl_path), csv_path)
 
 
-def _git_commit() -> str | None:
+def _git_commit():
     try:
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"],
@@ -103,8 +107,8 @@ def _git_commit() -> str | None:
     return None
 
 
-def collect_run_metadata(*, run_type: str, config_path: str | Path | None = None, extra: dict[str, Any] | None = None) -> dict[str, Any]:
-    gpu_info: list[dict[str, Any]] = []
+def collect_run_metadata(*, run_type, config_path=None, extra=None):
+    gpu_info = []
     if torch.cuda.is_available():
         for idx in range(torch.cuda.device_count()):
             props = torch.cuda.get_device_properties(idx)
@@ -116,7 +120,7 @@ def collect_run_metadata(*, run_type: str, config_path: str | Path | None = None
                     "capability": f"{props.major}.{props.minor}",
                 }
             )
-    record: dict[str, Any] = {
+    record = {
         "run_type": run_type,
         "created_unix_time": time.time(),
         "created_time_local": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -135,13 +139,13 @@ def collect_run_metadata(*, run_type: str, config_path: str | Path | None = None
 
 
 def save_metric_plots(
-    records: list[dict[str, Any]],
-    output_dir: str | Path,
+    records,
+    output_dir,
     *,
-    x_key: str,
-    y_keys: Iterable[str],
-    prefix: str,
-) -> list[str]:
+    x_key,
+    y_keys,
+    prefix,
+):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     if not records:
@@ -154,10 +158,10 @@ def save_metric_plots(
     except Exception:
         return []
 
-    paths: list[str] = []
+    paths = []
     for y_key in y_keys:
-        xs: list[float] = []
-        ys: list[float] = []
+        xs = []
+        ys = []
         for row in records:
             if x_key not in row or y_key not in row:
                 continue

@@ -5,7 +5,9 @@ from _bootstrap import ensure_repo_root_on_path
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run token-level PPO RLHF on Qwen with HelpSteer3 prompts.")
+    parser = argparse.ArgumentParser(
+        description="Run token-level PPO RLHF on Qwen with HelpSteer3 prompts."
+    )
     parser.add_argument("--config", required=True)
     parser.add_argument("--output-dir", default=None)
     args = parser.parse_args()

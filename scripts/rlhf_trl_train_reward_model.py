@@ -4,9 +4,13 @@ import argparse
 from _bootstrap import ensure_repo_root_on_path
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Train and calibrate a HelpSteer3 reward model with TRL.")
-    parser.add_argument("--config", default="configs/trl/qwen25_05b_helpsteer3_reward.yaml")
+def main():
+    parser = argparse.ArgumentParser(
+        description="Train and calibrate a HelpSteer3 reward model with TRL."
+    )
+    parser.add_argument(
+        "--config", default="configs/trl/qwen25_05b_helpsteer3_reward.yaml"
+    )
     parser.add_argument("--set", action="append", default=[], metavar="KEY=VALUE")
     args = parser.parse_args()
     ensure_repo_root_on_path()
@@ -15,7 +19,9 @@ def main() -> None:
     from rlhf.trl_train_reward import run_trl_reward
 
     cfg = load_config_with_overrides(args.config, args.set)
-    print(f"TRL reward output: {run_trl_reward(cfg, config_path=args.config).resolve()}")
+    print(
+        f"TRL reward output: {run_trl_reward(cfg, config_path=args.config).resolve()}"
+    )
 
 
 if __name__ == "__main__":

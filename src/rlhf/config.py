@@ -1,7 +1,6 @@
 import copy
 import re
 from pathlib import Path
-from typing import Any
 
 import yaml
 
@@ -11,7 +10,7 @@ class ConfigError(ValueError):
 
 
 class DotDict(dict):
-    def __getattr__(self, item: str) -> Any:
+    def __getattr__(self, item):
         try:
             value = self[item]
         except KeyError as exc:
@@ -25,7 +24,7 @@ class DotDict(dict):
     __delattr__ = dict.__delitem__
 
 
-def _merge_dicts(base: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
+def _merge_dicts(base, update):
     out = copy.deepcopy(base)
     for key, value in update.items():
         if isinstance(value, dict) and isinstance(out.get(key), dict):
@@ -35,7 +34,7 @@ def _merge_dicts(base: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]
     return out
 
 
-def load_config(path: str | Path) -> DotDict:
+def load_config(path):
     path = Path(path)
     with path.open("r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
@@ -46,12 +45,14 @@ def load_config(path: str | Path) -> DotDict:
     if "inherits" in cfg:
         parent_path = (path.parent / cfg["inherits"]).resolve()
         parent = load_config(parent_path)
-        cfg = _merge_dicts(dict(parent), {k: v for k, v in cfg.items() if k != "inherits"})
+        cfg = _merge_dicts(
+            dict(parent), {k: v for k, v in cfg.items() if k != "inherits"}
+        )
 
     return DotDict(cfg)
 
 
-def _override_parts(path: str) -> list[str]:
+def _override_parts(path):
     """Parse dotted paths and list indices such as policies[1].checkpoint_dir."""
     normalized = re.sub(r"\[(\d+)\]", r".\1", str(path).strip())
     parts = normalized.split(".")
@@ -60,17 +61,19 @@ def _override_parts(path: str) -> list[str]:
     return parts
 
 
-def _list_index(part: str, path: str) -> int:
+def _list_index(part, path):
     if not part.isdigit():
-        raise ConfigError(f"override path {path!r} must use an integer list index, got {part!r}")
+        raise ConfigError(
+            f"override path {path!r} must use an integer list index, got {part!r}"
+        )
     return int(part)
 
 
-def apply_overrides(cfg: DotDict, overrides: dict[str, Any]) -> DotDict:
+def apply_overrides(cfg, overrides):
     updated = copy.deepcopy(dict(cfg))
     for key, value in overrides.items():
         parts = _override_parts(key)
-        cursor: Any = updated
+        cursor = updated
         for position, part in enumerate(parts[:-1]):
             next_part = parts[position + 1]
             if isinstance(cursor, list):
@@ -121,7 +124,7 @@ def apply_overrides(cfg: DotDict, overrides: dict[str, Any]) -> DotDict:
     return DotDict(updated)
 
 
-def _to_builtin(value: Any) -> Any:
+def _to_builtin(value):
     if isinstance(value, dict):
         return {k: _to_builtin(v) for k, v in value.items()}
     if isinstance(value, list):
@@ -131,7 +134,7 @@ def _to_builtin(value: Any) -> Any:
     return value
 
 
-def save_config(cfg: dict[str, Any], path: str | Path) -> None:
+def save_config(cfg, path):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:

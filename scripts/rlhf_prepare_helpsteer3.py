@@ -5,7 +5,9 @@ from _bootstrap import ensure_repo_root_on_path
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Cache HelpSteer3 preference pairs/prompts as JSONL previews.")
+    parser = argparse.ArgumentParser(
+        description="Cache HelpSteer3 preference pairs/prompts as JSONL previews."
+    )
     parser.add_argument("--model-name", default="Qwen/Qwen2.5-0.5B-Instruct")
     parser.add_argument("--split", default="train")
     parser.add_argument("--max-samples", type=int, default=1000)

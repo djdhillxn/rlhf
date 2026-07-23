@@ -1,24 +1,27 @@
-from __future__ import annotations
-
 import hashlib
 import json
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Any, Iterable, Sequence
 
-from .data import CONTEXT_KEYS, PREFERENCE_SCORE_KEYS, RESPONSE1_KEYS, RESPONSE2_KEYS, load_helpsteer3_preference
+from .data import (
+    CONTEXT_KEYS,
+    PREFERENCE_SCORE_KEYS,
+    RESPONSE1_KEYS,
+    RESPONSE2_KEYS,
+    load_helpsteer3_preference,
+)
 from .formatting import normalize_messages, render_prompt, strip_trailing_assistant
 from .trl_common import write_json
 
 
-def _first_present(example: dict[str, Any], keys: Sequence[str]) -> Any:
+def _first_present(example, keys):
     for key in keys:
         if key in example and example[key] is not None:
             return example[key]
     return None
 
 
-def _preference_components(example: dict[str, Any]) -> tuple[list[dict[str, str]], str, str, float] | None:
+def _preference_components(example):
     raw_score = _first_present(example, PREFERENCE_SCORE_KEYS)
     try:
         score = float(raw_score)
@@ -42,11 +45,11 @@ def _preference_components(example: dict[str, Any]) -> tuple[list[dict[str, str]
     return messages, chosen, rejected, abs(score)
 
 
-def _encode_text(tokenizer: Any, text: str) -> list[int]:
+def _encode_text(tokenizer, text):
     return list(tokenizer(text, add_special_tokens=False)["input_ids"])
 
 
-def _encode_completion(tokenizer: Any, response: str) -> list[int]:
+def _encode_completion(tokenizer, response):
     ids = _encode_text(tokenizer, response.strip())
     eos_id = tokenizer.eos_token_id
     if eos_id is None:
@@ -56,11 +59,13 @@ def _encode_completion(tokenizer: Any, response: str) -> list[int]:
     return ids
 
 
-def _prompt_ids(tokenizer: Any, messages: list[dict[str, str]]) -> list[int]:
-    return _encode_text(tokenizer, render_prompt(tokenizer, messages, add_generation_prompt=True))
+def _prompt_ids(tokenizer, messages):
+    return _encode_text(
+        tokenizer, render_prompt(tokenizer, messages, add_generation_prompt=True)
+    )
 
 
-def _drop_oldest_turn(messages: list[dict[str, str]]) -> tuple[list[dict[str, str]], bool]:
+def _drop_oldest_turn(messages):
     if len(messages) <= 1:
         return messages, False
     for idx in range(len(messages) - 1):
@@ -70,13 +75,17 @@ def _drop_oldest_turn(messages: list[dict[str, str]]) -> tuple[list[dict[str, st
 
 
 def fit_prompt_to_budget(
-    tokenizer: Any,
-    messages: list[dict[str, str]],
-    max_prompt_tokens: int,
-) -> tuple[list[int], dict[str, Any]]:
+    tokenizer,
+    messages,
+    max_prompt_tokens,
+):
     """Drop old turns first, then left-truncate only as a final fallback."""
     if max_prompt_tokens <= 0:
-        return [], {"prompt_truncated": True, "dropped_turns": len(messages), "token_fallback": True}
+        return [], {
+            "prompt_truncated": True,
+            "dropped_turns": len(messages),
+            "token_fallback": True,
+        }
 
     working = [dict(message) for message in messages]
     dropped_turns = 0
@@ -98,19 +107,21 @@ def fit_prompt_to_budget(
     }
 
 
-def _example_id(messages: list[dict[str, str]], chosen: str, rejected: str) -> str:
-    payload = json.dumps([messages, chosen, rejected], sort_keys=True, ensure_ascii=False)
+def _example_id(messages, chosen, rejected):
+    payload = json.dumps(
+        [messages, chosen, rejected], sort_keys=True, ensure_ascii=False
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:20]
 
 
 def _metadata(
-    example: dict[str, Any],
-    messages: list[dict[str, str]],
-    chosen: str,
-    rejected: str,
-    strength: float,
-    fit: dict[str, Any],
-) -> dict[str, Any]:
+    example,
+    messages,
+    chosen,
+    rejected,
+    strength,
+    fit,
+):
     return {
         "example_id": _example_id(messages, chosen, rejected),
         "domain": str(example.get("domain", "unknown")),
@@ -121,14 +132,14 @@ def _metadata(
 
 
 def build_sft_records(
-    raw_dataset: Iterable[dict[str, Any]],
-    tokenizer: Any,
+    raw_dataset,
+    tokenizer,
     *,
-    max_length: int,
-    max_samples: int | None = None,
-) -> tuple[list[dict[str, Any]], Counter]:
-    records: list[dict[str, Any]] = []
-    stats: Counter = Counter()
+    max_length,
+    max_samples=None,
+):
+    records = []
+    stats = Counter()
     for raw in raw_dataset:
         example = dict(raw)
         parsed = _preference_components(example)
@@ -140,7 +151,9 @@ def build_sft_records(
         if len(completion_ids) >= max_length:
             stats["response_too_long"] += 1
             continue
-        prompt_ids, fit = fit_prompt_to_budget(tokenizer, messages, max_length - len(completion_ids))
+        prompt_ids, fit = fit_prompt_to_budget(
+            tokenizer, messages, max_length - len(completion_ids)
+        )
         if not prompt_ids:
             stats["no_prompt_budget"] += 1
             continue
@@ -163,14 +176,14 @@ def build_sft_records(
 
 
 def build_reward_records(
-    raw_dataset: Iterable[dict[str, Any]],
-    tokenizer: Any,
+    raw_dataset,
+    tokenizer,
     *,
-    max_length: int,
-    max_samples: int | None = None,
-) -> tuple[list[dict[str, Any]], Counter]:
-    records: list[dict[str, Any]] = []
-    stats: Counter = Counter()
+    max_length,
+    max_samples=None,
+):
+    records = []
+    stats = Counter()
     for raw in raw_dataset:
         example = dict(raw)
         parsed = _preference_components(example)
@@ -184,7 +197,9 @@ def build_reward_records(
         if max_response >= max_length:
             stats["response_too_long"] += 1
             continue
-        prompt_ids, fit = fit_prompt_to_budget(tokenizer, messages, max_length - max_response)
+        prompt_ids, fit = fit_prompt_to_budget(
+            tokenizer, messages, max_length - max_response
+        )
         if not prompt_ids:
             stats["no_prompt_budget"] += 1
             continue
@@ -208,15 +223,15 @@ def build_reward_records(
 
 
 def build_ppo_records(
-    raw_dataset: Iterable[dict[str, Any]],
-    tokenizer: Any,
+    raw_dataset,
+    tokenizer,
     *,
-    max_prompt_length: int,
-    max_samples: int | None = None,
-) -> tuple[list[dict[str, Any]], Counter]:
-    records: list[dict[str, Any]] = []
-    stats: Counter = Counter()
-    seen: set[str] = set()
+    max_prompt_length,
+    max_samples=None,
+):
+    records = []
+    stats = Counter()
+    seen = set()
     for raw in raw_dataset:
         example = dict(raw)
         context = _first_present(example, CONTEXT_KEYS)
@@ -251,13 +266,13 @@ def build_ppo_records(
     return records, stats
 
 
-def _length_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
-    values: dict[str, list[int]] = defaultdict(list)
+def _length_summary(records):
+    values = defaultdict(list)
     for row in records:
         for key, value in row.items():
             if key.endswith("_length") and isinstance(value, int):
                 values[key].append(value)
-    summary: dict[str, Any] = {}
+    summary = {}
     for key, series in values.items():
         ordered = sorted(series)
         if not ordered:
@@ -271,11 +286,11 @@ def _length_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
     return summary
 
 
-def stage_dataset_path(cache_root: str | Path, stage: str, split: str) -> Path:
+def stage_dataset_path(cache_root, stage, split):
     return Path(cache_root) / stage / split
 
 
-def load_stage_dataset(cache_root: str | Path, stage: str, split: str):
+def load_stage_dataset(cache_root, stage, split):
     from datasets import load_from_disk
 
     path = stage_dataset_path(cache_root, stage, split)
@@ -286,12 +301,12 @@ def load_stage_dataset(cache_root: str | Path, stage: str, split: str):
     return load_from_disk(str(path))
 
 
-def prepare_helpsteer3_for_trl(cfg: dict[str, Any], tokenizer: Any) -> dict[str, Any]:
+def prepare_helpsteer3_for_trl(cfg, tokenizer):
     from datasets import Dataset
 
     cache_root = Path(cfg.get("cache_dir", "outputs/trl/data/helpsteer3"))
     cache_root.mkdir(parents=True, exist_ok=True)
-    report: dict[str, Any] = {
+    report = {
         "schema_version": 1,
         "cache_dir": str(cache_root),
         "max_total_length": int(cfg.get("max_total_length", 4096)),
@@ -300,7 +315,7 @@ def prepare_helpsteer3_for_trl(cfg: dict[str, Any], tokenizer: Any) -> dict[str,
     }
     for split in cfg.get("splits", ["train", "validation"]):
         max_samples = cfg.get(f"max_{split}_samples")
-        split_report: dict[str, Any] = {}
+        split_report = {}
         for stage in ("sft", "reward", "ppo"):
             stage_raw = load_helpsteer3_preference(str(split))
             if stage == "sft":

@@ -1,42 +1,137 @@
-import math
 import random
-from dataclasses import dataclass
-from typing import Any
 
 import torch
-import torch.nn.functional as F
 
-from .lm_policy import TokenPolicyWithValue, shifted_token_logprobs
+from .lm_policy import shifted_token_logprobs
 from .metrics import explained_variance, masked_mean
-from .ppo_buffer import LMRolloutBatch
 
 
-@dataclass
+class LMRolloutBatch:
+    def __init__(
+        self,
+        input_ids,
+        attention_mask,
+        response_mask,
+        old_logprobs,
+        ref_logprobs,
+        values,
+        rewards,
+        scores,
+        advantages=None,
+        returns=None,
+        prompts=None,
+        responses=None,
+        metadata=None,
+    ):
+        self.input_ids = input_ids
+        self.attention_mask = attention_mask
+        self.response_mask = response_mask
+        self.old_logprobs = old_logprobs
+        self.ref_logprobs = ref_logprobs
+        self.values = values
+        self.rewards = rewards
+        self.scores = scores
+        self.advantages = advantages
+        self.returns = returns
+        self.prompts = prompts
+        self.responses = responses
+        self.metadata = metadata
+        self.validate()
+
+    def validate(self):
+        if self.input_ids.ndim != 2:
+            raise ValueError(
+                f"input_ids must be rank-2, got {tuple(self.input_ids.shape)}"
+            )
+        if self.attention_mask.shape != self.input_ids.shape:
+            raise ValueError(
+                f"attention_mask shape {tuple(self.attention_mask.shape)} must match input_ids {tuple(self.input_ids.shape)}"
+            )
+        label_shape = (self.input_ids.size(0), max(self.input_ids.size(1) - 1, 0))
+        for name in (
+            "response_mask",
+            "old_logprobs",
+            "ref_logprobs",
+            "values",
+            "rewards",
+        ):
+            value = getattr(self, name)
+            if tuple(value.shape) != tuple(label_shape):
+                raise ValueError(
+                    f"{name} shape {tuple(value.shape)} must be {tuple(label_shape)}"
+                )
+        if self.scores.ndim != 1 or self.scores.size(0) != self.input_ids.size(0):
+            raise ValueError(
+                f"scores shape {tuple(self.scores.shape)} must be ({self.input_ids.size(0)},)"
+            )
+        if (
+            self.advantages is not None
+            and self.advantages.shape != self.response_mask.shape
+        ):
+            raise ValueError("advantages shape must match response_mask shape")
+        if self.returns is not None and self.returns.shape != self.response_mask.shape:
+            raise ValueError("returns shape must match response_mask shape")
+
+    def to(self, device):
+        kwargs = {}
+        for field_name, value in self.__dict__.items():
+            if torch.is_tensor(value):
+                kwargs[field_name] = value.to(device)
+            else:
+                kwargs[field_name] = value
+        return LMRolloutBatch(**kwargs)
+
+    @property
+    def batch_size(self):
+        return int(self.input_ids.size(0))
+
+    @property
+    def num_response_tokens(self):
+        return int(self.response_mask.sum().item())
+
+
 class LMPPOStats:
-    loss: float
-    policy_loss: float
-    value_loss: float
-    approx_kl: float
-    clip_fraction: float
-    entropy: float
-    reward_model_score: float
-    non_score_reward: float
-    objective_kl: float
-    abs_ref_logratio: float
-    total_reward: float
-    value_explained_variance: float
-    kl_coef: float
-    num_response_tokens: int
+    def __init__(
+        self,
+        loss,
+        policy_loss,
+        value_loss,
+        approx_kl,
+        clip_fraction,
+        entropy,
+        reward_model_score,
+        non_score_reward,
+        objective_kl,
+        abs_ref_logratio,
+        total_reward,
+        value_explained_variance,
+        kl_coef,
+        num_response_tokens,
+    ):
+        self.loss = loss
+        self.policy_loss = policy_loss
+        self.value_loss = value_loss
+        self.approx_kl = approx_kl
+        self.clip_fraction = clip_fraction
+        self.entropy = entropy
+        self.reward_model_score = reward_model_score
+        self.non_score_reward = non_score_reward
+        self.objective_kl = objective_kl
+        self.abs_ref_logratio = abs_ref_logratio
+        self.total_reward = total_reward
+        self.value_explained_variance = value_explained_variance
+        self.kl_coef = kl_coef
+        self.num_response_tokens = num_response_tokens
 
 
 def compute_gae(
-    rewards: torch.Tensor,
-    values: torch.Tensor,
-    mask: torch.Tensor,
+    rewards,
+    values,
+    mask,
     *,
-    gamma: float = 1.0,
-    lam: float = 0.95,
-) -> tuple[torch.Tensor, torch.Tensor]:
+    gamma=1.0,
+    lam=0.95,
+):
     """GAE over generated response tokens."""
     rewards = rewards.float()
     values = values.float()
@@ -59,7 +154,7 @@ def compute_gae(
     return advantages * mask_f, returns * mask_f
 
 
-def normalize_advantages(advantages: torch.Tensor, mask: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+def normalize_advantages(advantages, mask, eps=1e-8):
     valid = mask.bool()
     out = advantages.clone()
     if valid.sum() > 1:
@@ -73,13 +168,13 @@ def normalize_advantages(advantages: torch.Tensor, mask: torch.Tensor, eps: floa
 class AdaptiveKLController:
     def __init__(
         self,
-        init_kl_coef: float = 0.05,
-        target_kl: float = 0.05,
-        horizon: int = 10000,
-        min_kl_coef: float = 0.02,
-        max_kl_coef: float = 1.0,
-        adaptive: bool = True,
-    ) -> None:
+        init_kl_coef=0.05,
+        target_kl=0.05,
+        horizon=10000,
+        min_kl_coef=0.02,
+        max_kl_coef=1.0,
+        adaptive=True,
+    ):
         self.value = float(init_kl_coef)
         self.target = float(target_kl)
         self.horizon = max(1, int(horizon))
@@ -88,7 +183,7 @@ class AdaptiveKLController:
         self.adaptive = bool(adaptive)
         self.value = float(min(max(self.value, self.min_value), self.max_value))
 
-    def update(self, measured_kl: float, n_steps: int) -> float:
+    def update(self, measured_kl, n_steps):
         # Empirical sampled log-ratio estimates can be negative on small batches,
         # even though the true KL is non-negative in expectation.  Negative noisy
         # estimates previously drove the KL coefficient almost to zero, allowing
@@ -103,12 +198,14 @@ class AdaptiveKLController:
 
 
 class LMPPOTrainer:
-    def __init__(self, policy: TokenPolicyWithValue, cfg: dict[str, Any]) -> None:
+    def __init__(self, policy, cfg):
         self.policy = policy
         self.cfg = cfg
         self.clip_range = float(cfg.get("clip_range", 0.2))
         self.value_clip_range = cfg.get("value_clip_range", 0.2)
-        self.value_clip_range = None if self.value_clip_range is None else float(self.value_clip_range)
+        self.value_clip_range = (
+            None if self.value_clip_range is None else float(self.value_clip_range)
+        )
         self.value_coef = float(cfg.get("value_coef", 0.5))
         self.entropy_coef = float(cfg.get("entropy_coef", 0.0))
         self.learning_rate = float(cfg.get("learning_rate", 1e-5))
@@ -125,7 +222,7 @@ class LMPPOTrainer:
             weight_decay=self.weight_decay,
         )
 
-    def prepare_batch(self, batch: LMRolloutBatch) -> LMRolloutBatch:
+    def prepare_batch(self, batch):
         advantages, returns = compute_gae(
             batch.rewards,
             batch.values,
@@ -138,13 +235,13 @@ class LMPPOTrainer:
         batch.returns = returns.detach()
         return batch
 
-    def update(self, batch: LMRolloutBatch, *, kl_coef: float) -> LMPPOStats:
+    def update(self, batch, *, kl_coef):
         if batch.advantages is None or batch.returns is None:
             batch = self.prepare_batch(batch)
         self.policy.train()
         n = batch.batch_size
         indices = list(range(n))
-        last_metrics: dict[str, float] = {}
+        last_metrics = {}
         stop_early = False
 
         for _epoch in range(self.ppo_epochs):
@@ -153,7 +250,9 @@ class LMPPOTrainer:
                 mb_idx = indices[start : start + self.minibatch_size]
                 if not mb_idx:
                     continue
-                idx = torch.tensor(mb_idx, device=batch.input_ids.device, dtype=torch.long)
+                idx = torch.tensor(
+                    mb_idx, device=batch.input_ids.device, dtype=torch.long
+                )
                 metrics = self._update_minibatch(batch, idx)
                 last_metrics = metrics
                 if metrics["approx_kl"] > 1.5 * self.target_policy_kl:
@@ -164,14 +263,24 @@ class LMPPOTrainer:
 
         with torch.no_grad():
             current_out = self.policy(batch.input_ids, batch.attention_mask)
-            current_logprobs = shifted_token_logprobs(current_out.logits, batch.input_ids)
+            current_logprobs = shifted_token_logprobs(
+                current_out.logits, batch.input_ids
+            )
             current_ref_logratio = current_logprobs.float() - batch.ref_logprobs.float()
-            rollout_ref_logratio = batch.old_logprobs.float() - batch.ref_logprobs.float()
+            rollout_ref_logratio = (
+                batch.old_logprobs.float() - batch.ref_logprobs.float()
+            )
             objective_kl = masked_mean(current_ref_logratio, batch.response_mask).item()
-            abs_ref_logratio = masked_mean(current_ref_logratio.abs(), batch.response_mask).item()
-            non_score_reward = masked_mean(-float(kl_coef) * rollout_ref_logratio, batch.response_mask).item()
+            abs_ref_logratio = masked_mean(
+                current_ref_logratio.abs(), batch.response_mask
+            ).item()
+            non_score_reward = masked_mean(
+                -float(kl_coef) * rollout_ref_logratio, batch.response_mask
+            ).item()
             total_reward = masked_mean(batch.rewards, batch.response_mask).item()
-            value_ev = explained_variance(batch.values, batch.returns, batch.response_mask)
+            value_ev = explained_variance(
+                batch.values, batch.returns, batch.response_mask
+            )
 
         return LMPPOStats(
             loss=float(last_metrics.get("loss", float("nan"))),
@@ -190,7 +299,7 @@ class LMPPOTrainer:
             num_response_tokens=batch.num_response_tokens,
         )
 
-    def _update_minibatch(self, batch: LMRolloutBatch, idx: torch.Tensor) -> dict[str, float]:
+    def _update_minibatch(self, batch, idx):
         input_ids = batch.input_ids.index_select(0, idx)
         attention_mask = batch.attention_mask.index_select(0, idx)
         mask = batch.response_mask.index_select(0, idx)
@@ -206,16 +315,23 @@ class LMPPOTrainer:
         logratio = new_logprobs - old_logprobs
         ratio = torch.exp(logratio)
         unclipped = ratio * advantages
-        clipped = torch.clamp(ratio, 1.0 - self.clip_range, 1.0 + self.clip_range) * advantages
+        clipped = (
+            torch.clamp(ratio, 1.0 - self.clip_range, 1.0 + self.clip_range)
+            * advantages
+        )
         policy_loss = -masked_mean(torch.minimum(unclipped, clipped), mask)
 
         if self.value_clip_range is None:
             value_pred = new_values
         else:
-            value_pred = old_values + torch.clamp(new_values - old_values, -self.value_clip_range, self.value_clip_range)
+            value_pred = old_values + torch.clamp(
+                new_values - old_values, -self.value_clip_range, self.value_clip_range
+            )
         value_loss_unclipped = (new_values - returns) ** 2
         value_loss_clipped = (value_pred - returns) ** 2
-        value_loss = 0.5 * masked_mean(torch.maximum(value_loss_unclipped, value_loss_clipped), mask)
+        value_loss = 0.5 * masked_mean(
+            torch.maximum(value_loss_unclipped, value_loss_clipped), mask
+        )
 
         entropy = torch.tensor(0.0, device=input_ids.device)
         if self.entropy_coef > 0:
@@ -229,7 +345,9 @@ class LMPPOTrainer:
         self.optimizer.zero_grad(set_to_none=True)
         loss.backward()
         if self.max_grad_norm > 0:
-            torch.nn.utils.clip_grad_norm_(self.policy.trainable_parameters(), self.max_grad_norm)
+            torch.nn.utils.clip_grad_norm_(
+                self.policy.trainable_parameters(), self.max_grad_norm
+            )
         self.optimizer.step()
 
         with torch.no_grad():
@@ -238,7 +356,9 @@ class LMPPOTrainer:
             # negative on small minibatches and fail to trigger early stopping.
             approx_kl_tensor = (ratio - 1.0) - logratio
             approx_kl = masked_mean(approx_kl_tensor, mask).clamp_min(0.0).item()
-            clip_fraction = masked_mean((torch.abs(ratio - 1.0) > self.clip_range).float(), mask).item()
+            clip_fraction = masked_mean(
+                (torch.abs(ratio - 1.0) > self.clip_range).float(), mask
+            ).item()
         return {
             "loss": float(loss.item()),
             "policy_loss": float(policy_loss.item()),

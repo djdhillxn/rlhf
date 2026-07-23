@@ -5,8 +5,14 @@ from _bootstrap import ensure_repo_root_on_path
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Create CSV files and PNG learning curves from RLHF JSONL logs.")
-    parser.add_argument("--run-dir", required=True, help="RLHF output directory, e.g. outputs/rlhf/qwen25_05b_helpsteer3_ppo")
+    parser = argparse.ArgumentParser(
+        description="Create CSV files and PNG learning curves from RLHF JSONL logs."
+    )
+    parser.add_argument(
+        "--run-dir",
+        required=True,
+        help="RLHF output directory, e.g. outputs/rlhf/qwen25_05b_helpsteer3_ppo",
+    )
     parser.add_argument("--kind", choices=["reward", "ppo"], required=True)
     args = parser.parse_args()
     ensure_repo_root_on_path()

@@ -1,17 +1,20 @@
-from __future__ import annotations
-
 import copy
 import gc
 import inspect
 from pathlib import Path
-from typing import Any
 
 import torch
 
 from .config import save_config
 from .experiment import finalize_experiment, initialize_experiment
-from .trl_callbacks import build_callbacks
-from .trl_common import build_lora_config, load_tokenizer, maybe_sync_tree, trainer_report_to, write_json
+from .trl_common import (
+    build_callbacks,
+    build_lora_config,
+    load_tokenizer,
+    maybe_sync_tree,
+    trainer_report_to,
+    write_json,
+)
 from .trl_data import load_stage_dataset
 from .trl_models import (
     apply_reward_center,
@@ -24,7 +27,7 @@ from .trl_models import (
 )
 
 
-def _patch_trl_generate_for_fixed_length(ppo_module: Any) -> None:
+def _patch_trl_generate_for_fixed_length(ppo_module):
     """Force PPO rollouts to sample the configured length before EOS truncation.
 
     TRL already truncates generated responses at the stop token before reward
@@ -35,10 +38,14 @@ def _patch_trl_generate_for_fixed_length(ppo_module: Any) -> None:
         return
 
     if not hasattr(ppo_module, "generate"):
-        raise RuntimeError("TRL PPO module does not expose generate; cannot apply fixed-length EOS patch.")
+        raise RuntimeError(
+            "TRL PPO module does not expose generate; cannot apply fixed-length EOS patch."
+        )
     original_generate = ppo_module.generate
 
-    def generate_without_eos_stop(lm_backbone, queries, pad_token_id, generation_config):
+    def generate_without_eos_stop(
+        lm_backbone, queries, pad_token_id, generation_config
+    ):
         generation_config = copy.deepcopy(generation_config)
         generation_config.eos_token_id = None
         generation_config.forced_eos_token_id = None
@@ -48,7 +55,7 @@ def _patch_trl_generate_for_fixed_length(ppo_module: Any) -> None:
     ppo_module._rlhf_fixed_length_generate_patch = True
 
 
-def _patch_trl_reward_for_required_eos(ppo_module: Any) -> None:
+def _patch_trl_reward_for_required_eos(ppo_module):
     """Replace invalid no-EOS reward scores with a constant reward.
 
     TRL's `missing_eos_penalty` subtracts a scalar from the learned reward.
@@ -60,10 +67,14 @@ def _patch_trl_reward_for_required_eos(ppo_module: Any) -> None:
         return
 
     if not hasattr(ppo_module, "get_reward"):
-        raise RuntimeError("TRL PPO module does not expose get_reward; cannot apply required-EOS reward patch.")
+        raise RuntimeError(
+            "TRL PPO module does not expose get_reward; cannot apply required-EOS reward patch."
+        )
     original_get_reward = ppo_module.get_reward
 
-    def get_reward_with_required_eos(model, query_responses, pad_token_id, context_length):
+    def get_reward_with_required_eos(
+        model, query_responses, pad_token_id, context_length
+    ):
         reward_logits, final_rewards, sequence_lengths = original_get_reward(
             model,
             query_responses,
@@ -86,7 +97,7 @@ def _patch_trl_reward_for_required_eos(ppo_module: Any) -> None:
     ppo_module._rlhf_required_eos_reward_patch = True
 
 
-def run_trl_ppo(cfg: dict[str, Any], *, config_path: str | Path | None = None) -> Path:
+def run_trl_ppo(cfg, *, config_path=None):
     from trl.experimental.ppo import PPOConfig, PPOTrainer
 
     ppo_trainer_module = inspect.getmodule(PPOTrainer)
@@ -115,15 +126,22 @@ def run_trl_ppo(cfg: dict[str, Any], *, config_path: str | Path | None = None) -
         trust_remote_code=bool(cfg["model"].get("trust_remote_code", False)),
         padding_side="left",
     )
-    policy = load_causal_model(str(cfg["model"]["policy_model_path"]), tokenizer, cfg["model"])
+    policy = load_causal_model(
+        str(cfg["model"]["policy_model_path"]), tokenizer, cfg["model"]
+    )
     sampling_distribution = configure_ppo_sampling_distribution(
         policy,
         temperature=float(cfg["ppo"].get("temperature", 0.7)),
     )
     write_json(sampling_distribution, output_dir / "ppo_sampling_distribution.json")
 
-    reference_path = str(cfg["model"].get("reference_model_path", cfg["model"]["policy_model_path"]))
-    if Path(reference_path).resolve() == Path(str(cfg["model"]["policy_model_path"])).resolve():
+    reference_path = str(
+        cfg["model"].get("reference_model_path", cfg["model"]["policy_model_path"])
+    )
+    if (
+        Path(reference_path).resolve()
+        == Path(str(cfg["model"]["policy_model_path"])).resolve()
+    ):
         reference = None
     else:
         reference = load_causal_model(reference_path, tokenizer, cfg["model"])
@@ -133,22 +151,32 @@ def run_trl_ppo(cfg: dict[str, Any], *, config_path: str | Path | None = None) -
 
     reward_path = str(cfg["model"]["reward_model_path"])
     value_path = str(cfg["model"].get("value_model_path", reward_path))
-    reward_model = load_sequence_classification_model(reward_path, tokenizer, cfg["model"])
-    value_model = load_sequence_classification_model(value_path, tokenizer, cfg["model"])
+    reward_model = load_sequence_classification_model(
+        reward_path, tokenizer, cfg["model"]
+    )
+    value_model = load_sequence_classification_model(
+        value_path, tokenizer, cfg["model"]
+    )
     reward_offset = load_reward_center(cfg["model"].get("reward_center_path"))
     apply_reward_center(reward_model, reward_offset)
     apply_reward_center(value_model, reward_offset)
 
-    train_dataset = load_stage_dataset(cfg["data"]["cache_dir"], "ppo", cfg["data"].get("train_split", "train"))
+    train_dataset = load_stage_dataset(
+        cfg["data"]["cache_dir"], "ppo", cfg["data"].get("train_split", "train")
+    )
     eval_dataset = load_stage_dataset(
         cfg["data"]["cache_dir"], "ppo", cfg["data"].get("eval_split", "validation")
     )
     train_dataset = train_dataset.select_columns(["input_ids"])
     eval_dataset = eval_dataset.select_columns(["input_ids"])
     if cfg["data"].get("max_train_samples"):
-        train_dataset = train_dataset.select(range(min(len(train_dataset), int(cfg["data"]["max_train_samples"]))))
+        train_dataset = train_dataset.select(
+            range(min(len(train_dataset), int(cfg["data"]["max_train_samples"])))
+        )
     if cfg["data"].get("max_eval_samples"):
-        eval_dataset = eval_dataset.select(range(min(len(eval_dataset), int(cfg["data"]["max_eval_samples"]))))
+        eval_dataset = eval_dataset.select(
+            range(min(len(eval_dataset), int(cfg["data"]["max_eval_samples"])))
+        )
 
     lora_cfg = dict(cfg.get("lora", {}))
     if float(lora_cfg.get("lora_dropout", 0.0)) != 0.0:
@@ -163,23 +191,37 @@ def run_trl_ppo(cfg: dict[str, Any], *, config_path: str | Path | None = None) -
         "fixed_length_generation": bool(ppo_cfg.get("fixed_length_generation", False)),
         "require_eos_for_reward": bool(ppo_cfg.get("require_eos_for_reward", False)),
         "missing_eos_reward": float(ppo_cfg.get("missing_eos_reward", -1.0)),
-        "eos_token_id": int(tokenizer.eos_token_id) if tokenizer.eos_token_id is not None else None,
+        "eos_token_id": int(tokenizer.eos_token_id)
+        if tokenizer.eos_token_id is not None
+        else None,
     }
     if eos_trick["require_eos_for_reward"]:
         if eos_trick["eos_token_id"] is None:
-            raise ValueError("PPO require_eos_for_reward=true requires tokenizer.eos_token_id.")
+            raise ValueError(
+                "PPO require_eos_for_reward=true requires tokenizer.eos_token_id."
+            )
         _patch_trl_reward_for_required_eos(ppo_trainer_module)
-        setattr(reward_model, "rlhf_required_eos_token_id", int(eos_trick["eos_token_id"]))
-        setattr(reward_model, "rlhf_missing_eos_reward", float(eos_trick["missing_eos_reward"]))
+        setattr(
+            reward_model, "rlhf_required_eos_token_id", int(eos_trick["eos_token_id"])
+        )
+        setattr(
+            reward_model,
+            "rlhf_missing_eos_reward",
+            float(eos_trick["missing_eos_reward"]),
+        )
     write_json(eos_trick, output_dir / "ppo_eos_trick.json")
 
     ppo_config_kwargs = dict(
         output_dir=str(output_dir),
         seed=int(train_cfg.get("seed", 839)),
         data_seed=int(train_cfg.get("data_seed", train_cfg.get("seed", 839))),
-        per_device_train_batch_size=int(train_cfg.get("per_device_train_batch_size", 2)),
+        per_device_train_batch_size=int(
+            train_cfg.get("per_device_train_batch_size", 2)
+        ),
         per_device_eval_batch_size=int(train_cfg.get("per_device_eval_batch_size", 8)),
-        gradient_accumulation_steps=int(train_cfg.get("gradient_accumulation_steps", 8)),
+        gradient_accumulation_steps=int(
+            train_cfg.get("gradient_accumulation_steps", 8)
+        ),
         learning_rate=float(train_cfg.get("learning_rate", 3e-6)),
         weight_decay=float(train_cfg.get("weight_decay", 0.0)),
         max_grad_norm=float(train_cfg.get("max_grad_norm", 1.0)),
@@ -199,7 +241,9 @@ def run_trl_ppo(cfg: dict[str, Any], *, config_path: str | Path | None = None) -
         total_episodes=int(ppo_cfg.get("total_episodes", 2048)),
         num_ppo_epochs=int(ppo_cfg.get("num_ppo_epochs", 4)),
         num_mini_batches=int(ppo_cfg.get("num_mini_batches", 1)),
-        local_rollout_forward_batch_size=int(ppo_cfg.get("local_rollout_forward_batch_size", 4)),
+        local_rollout_forward_batch_size=int(
+            ppo_cfg.get("local_rollout_forward_batch_size", 4)
+        ),
         response_length=int(ppo_cfg.get("response_length", 512)),
         stop_token=str(ppo_cfg.get("stop_token", "eos")),
         temperature=float(ppo_cfg.get("temperature", 0.7)),
