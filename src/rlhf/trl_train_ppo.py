@@ -4,11 +4,14 @@ import hashlib
 import inspect
 import json
 import math
+import os
+import pickle
 import random
 import shutil
 import time
 from pathlib import Path
 
+import numpy as np
 import torch
 
 from .config import save_config
@@ -42,6 +45,7 @@ RESUME_METADATA_NAME = "ppo_resume_metadata.json"
 VALUE_STATE_NAME = "value_model.safetensors"
 POLICY_ADAPTER_DIR = "policy_adapter"
 DIAGNOSTICS_NAME = "ppo_diagnostics.jsonl"
+MEMORY_TRACE_NAME = "ppo_memory_trace.jsonl"
 
 
 def _quantile(values, probability):
@@ -519,7 +523,98 @@ def _clear_cuda_after_oom():
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-        torch.cuda.reset_peak_memory_stats()
+
+
+def _remove_common_prompt_padding(input_ids, context_length, pad_token_id):
+    """Remove prompt columns masked for every row while retaining the response."""
+    context_length = int(context_length)
+    prompt = input_ids[:, :context_length]
+    response = input_ids[:, context_length:]
+    keep_prompt_columns = torch.any(prompt != int(pad_token_id), dim=0)
+    if not torch.any(keep_prompt_columns):
+        raise RuntimeError("A PPO processing chunk contains only padded prompts.")
+    compact_prompt = prompt[:, keep_prompt_columns]
+    compact = torch.cat((compact_prompt, response), dim=1)
+    return compact, compact_prompt.shape[1], context_length - compact_prompt.shape[1]
+
+
+def _model_inputs(input_ids, pad_token_id):
+    attention_mask = input_ids != int(pad_token_id)
+    position_ids = attention_mask.cumsum(1) - attention_mask.long()
+    model_input_ids = torch.masked_fill(input_ids, ~attention_mask, 0)
+    return model_input_ids, attention_mask, position_ids
+
+
+def _response_policy_logits(
+    model,
+    query_responses,
+    *,
+    context_length,
+    pad_token_id,
+    response_length,
+):
+    compact, _, _ = _remove_common_prompt_padding(
+        query_responses, context_length, pad_token_id
+    )
+    input_ids, attention_mask, position_ids = _model_inputs(compact, pad_token_id)
+    output = model(
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        position_ids=position_ids,
+        return_dict=True,
+        output_hidden_states=False,
+        use_cache=False,
+        logits_to_keep=int(response_length) + 1,
+    )
+    if output.logits.shape[1] != int(response_length) + 1:
+        raise RuntimeError(
+            "The policy did not return the requested response-only logits: "
+            f"received {tuple(output.logits.shape)}."
+        )
+    return output.logits[:, :-1]
+
+
+def _response_values(
+    value_model,
+    query_responses,
+    *,
+    context_length,
+    pad_token_id,
+    response_length,
+):
+    compact, _, _ = _remove_common_prompt_padding(
+        query_responses, context_length, pad_token_id
+    )
+    input_ids, attention_mask, position_ids = _model_inputs(compact, pad_token_id)
+    critic_backbone = getattr(value_model, value_model.base_model_prefix)
+    output = critic_backbone(
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        position_ids=position_ids,
+        return_dict=True,
+        output_hidden_states=False,
+        use_cache=False,
+    )
+    hidden_states = getattr(output, "last_hidden_state", None)
+    if hidden_states is None:
+        hidden_states = output[0]
+    values = value_model.score(hidden_states)
+    return values[:, -(int(response_length) + 1) : -1].squeeze(-1)
+
+
+def _mean_categorical_entropy(logits, chunk_size=64):
+    total = torch.zeros((), device=logits.device, dtype=torch.float32)
+    count = 0
+    with torch.no_grad():
+        for start in range(0, logits.shape[1], int(chunk_size)):
+            chunk = logits[:, start : start + int(chunk_size)]
+            probabilities = torch.nn.functional.softmax(chunk, dim=-1)
+            entropy = torch.logsumexp(chunk, dim=-1) - torch.sum(
+                probabilities * chunk, dim=-1
+            )
+            total += entropy.float().sum()
+            count += entropy.numel()
+    return total / max(count, 1)
 
 
 def _generate_query_responses(
@@ -542,14 +637,16 @@ def _generate_query_responses(
 
     for start in range(0, queries.shape[0], int(chunk_size)):
         query = queries[start : start + int(chunk_size)]
-        attention_mask = query != int(pad_token_id)
-        input_ids = torch.masked_fill(query, ~attention_mask, 0)
+        compact_query, compact_context_length, _ = _remove_common_prompt_padding(
+            query, context_length, pad_token_id
+        )
+        input_ids, attention_mask, _ = _model_inputs(compact_query, pad_token_id)
         generated = model.generate(
             input_ids=input_ids,
             attention_mask=attention_mask,
             generation_config=config,
         )
-        response = generated[:, context_length:]
+        response = generated[:, compact_context_length:]
         expected_length = int(config.max_new_tokens)
         if response.shape[1] != expected_length:
             raise RuntimeError(
@@ -557,7 +654,7 @@ def _generate_query_responses(
                 f"rollout length: expected {expected_length}, got {response.shape[1]}."
             )
         query_responses.append(torch.cat((query, response), dim=1))
-        del generated, response, input_ids, attention_mask
+        del generated, response, input_ids, attention_mask, compact_query
     return torch.cat(query_responses, dim=0)
 
 
@@ -577,43 +674,21 @@ def _selected_policy_logprobs(
     for start in range(0, query_responses.shape[0], int(chunk_size)):
         query_response = query_responses[start : start + int(chunk_size)]
         response = query_response[:, int(context_length) :]
-        attention_mask = query_response != int(pad_token_id)
-        position_ids = attention_mask.cumsum(1) - attention_mask.long()
-        input_ids = torch.masked_fill(query_response, ~attention_mask, 0)
-        forward_kwargs = {
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-            "position_ids": position_ids,
-            "return_dict": True,
-            "output_hidden_states": False,
-            "use_cache": False,
-        }
-        if require_logits_to_keep:
-            forward_kwargs["logits_to_keep"] = response_length + 1
-        output = model(**forward_kwargs)
-        logits = output.logits
-        if logits.shape[1] == response_length + 1:
-            response_logits = logits[:, :-1]
-        elif not require_logits_to_keep and logits.shape[1] == query_response.shape[1]:
-            response_logits = logits[:, int(context_length) - 1 : -1]
-        else:
+        if not require_logits_to_keep:
             raise RuntimeError(
-                "The policy did not honor logits_to_keep for compact PPO "
-                f"log-probability recomputation: received {tuple(logits.shape)}, "
-                f"expected sequence dimension {response_length + 1}."
+                "The guarded PPO path requires response-only logits_to_keep."
             )
+        response_logits = _response_policy_logits(
+            model,
+            query_response,
+            context_length=context_length,
+            pad_token_id=pad_token_id,
+            response_length=response_length,
+        )
         response_logits = response_logits / max(float(temperature), 1e-7)
         selected = selective_log_softmax(response_logits, response)
         selected_logprobs.append(selected.detach())
-        del (
-            selected,
-            response_logits,
-            logits,
-            output,
-            input_ids,
-            attention_mask,
-            position_ids,
-        )
+        del selected, response_logits
     return torch.cat(selected_logprobs, dim=0)
 
 
@@ -636,9 +711,6 @@ def memory_efficient_batch_generation(
     logprob_candidates = _normalized_chunk_candidates(logprob_batch_candidates, 1)
     was_training = model.training
     model.eval()
-    if torch.cuda.is_available():
-        torch.cuda.reset_peak_memory_stats()
-
     generation_rng = _capture_torch_rng_state()
     generation_attempts = []
     _cuda_synchronize()
@@ -646,7 +718,7 @@ def memory_efficient_batch_generation(
     query_responses = None
     selected_generation_batch = None
     try:
-        for chunk_size in generation_candidates:
+        for candidate_index, chunk_size in enumerate(generation_candidates):
             _restore_torch_rng_state(generation_rng)
             try:
                 query_responses = _generate_query_responses(
@@ -667,7 +739,8 @@ def memory_efficient_batch_generation(
                 generation_attempts.append(
                     {"batch_size": int(chunk_size), "status": "cuda_oom"}
                 )
-                _clear_cuda_after_oom()
+                if candidate_index + 1 < len(generation_candidates):
+                    _clear_cuda_after_oom()
         if query_responses is None:
             raise torch.OutOfMemoryError(
                 "All configured PPO generation batch sizes exhausted GPU memory: "
@@ -681,7 +754,7 @@ def memory_efficient_batch_generation(
         logprob_started = time.perf_counter()
         selected_logprobs = None
         selected_logprob_batch = None
-        for chunk_size in logprob_candidates:
+        for candidate_index, chunk_size in enumerate(logprob_candidates):
             try:
                 selected_logprobs = _selected_policy_logprobs(
                     model,
@@ -703,7 +776,8 @@ def memory_efficient_batch_generation(
                 logprob_attempts.append(
                     {"batch_size": int(chunk_size), "status": "cuda_oom"}
                 )
-                _clear_cuda_after_oom()
+                if candidate_index + 1 < len(logprob_candidates):
+                    _clear_cuda_after_oom()
         if selected_logprobs is None:
             raise torch.OutOfMemoryError(
                 "All configured PPO log-probability batch sizes exhausted GPU "
@@ -801,6 +875,665 @@ def _patch_trl_memory_efficient_rollout(ppo_module, settings):
     return profile_state
 
 
+class _PpoMemoryTrace:
+    def __init__(self, output_dir):
+        self.output_dir = Path(output_dir)
+        self.path = self.output_dir / MEMORY_TRACE_NAME
+        self.update = 0
+        self.phase = None
+        self.phases = {}
+
+    def _sample(self):
+        if not torch.cuda.is_available():
+            return {}
+        free_bytes, total_bytes = torch.cuda.mem_get_info()
+        return {
+            "allocated_gib": torch.cuda.memory_allocated() / 2**30,
+            "reserved_gib": torch.cuda.memory_reserved() / 2**30,
+            "peak_allocated_gib": torch.cuda.max_memory_allocated() / 2**30,
+            "peak_reserved_gib": torch.cuda.max_memory_reserved() / 2**30,
+            "free_gib": free_bytes / 2**30,
+            "total_gib": total_bytes / 2**30,
+        }
+
+    def begin_update(self, update):
+        self.update = int(update)
+        self.phase = None
+        self.phases = {}
+
+    def begin_phase(self, phase):
+        self.phase = str(phase)
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
+
+    def end_phase(self):
+        if self.phase is None:
+            return
+        sample = self._sample()
+        previous = self.phases.get(self.phase, {})
+        self.phases[self.phase] = {
+            key: max(float(value), float(previous.get(key, 0.0)))
+            for key, value in sample.items()
+        }
+        self.phase = None
+
+    def finish_update(self):
+        self.end_phase()
+        record = {
+            "schema_version": 1,
+            "update": self.update,
+            "status": "completed",
+            "phases": self.phases,
+        }
+        with self.path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        metrics = {}
+        for phase, values in self.phases.items():
+            for key in ("peak_allocated_gib", "peak_reserved_gib"):
+                if key in values:
+                    metrics[f"memory/{phase}_{key}"] = values[key]
+        if self.phases:
+            metrics["memory/update_peak_cuda_allocated_gib"] = max(
+                values.get("peak_allocated_gib", 0.0) for values in self.phases.values()
+            )
+            metrics["memory/update_peak_cuda_reserved_gib"] = max(
+                values.get("peak_reserved_gib", 0.0) for values in self.phases.values()
+            )
+        return metrics
+
+    def capture_oom(self, error):
+        failed_phase = self.phase
+        self.end_phase()
+        report = {
+            "schema_version": 1,
+            "update": self.update,
+            "status": "cuda_oom",
+            "phase": failed_phase,
+            "error": str(error),
+            "allocator_config": str(os.environ.get("PYTORCH_ALLOC_CONF", "")),
+            "phases": self.phases,
+            "current": self._sample(),
+        }
+        report_path = self.output_dir / f"ppo_cuda_oom_update_{self.update}.json"
+        write_json(report, report_path)
+        if torch.cuda.is_available():
+            summary_path = self.output_dir / (
+                f"ppo_cuda_oom_update_{self.update}_memory_summary.txt"
+            )
+            try:
+                summary_path.write_text(
+                    torch.cuda.memory_summary(abbreviated=False), encoding="utf-8"
+                )
+            except Exception as summary_error:
+                report["memory_summary_error"] = str(summary_error)
+            snapshot_path = self.output_dir / (
+                f"ppo_cuda_oom_update_{self.update}_snapshot.pickle"
+            )
+            try:
+                with snapshot_path.open("wb") as handle:
+                    pickle.dump(torch.cuda.memory_snapshot(), handle)
+            except Exception as snapshot_error:
+                report["snapshot_error"] = str(snapshot_error)
+            write_json(report, report_path)
+        with self.path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(report, ensure_ascii=False) + "\n")
+
+
+@torch.no_grad()
+def _collect_ppo_rollout(trainer, ppo_module, generation_config, memory_trace):
+    args = trainer.args
+    accelerator = trainer.accelerator
+    model = trainer.model
+    ref_policy = trainer.ref_model
+    reward_model = trainer.reward_model
+    processing_class = trainer.processing_class
+    device = accelerator.device
+    data = next(trainer._rlhf_iter_dataloader)
+    queries = data["input_ids"].to(device)
+    context_length = queries.shape[1]
+    response_length = int(args.response_length)
+    unwrapped = accelerator.unwrap_model(model)
+
+    memory_trace.begin_phase("rollout_generation")
+    with ppo_module.unwrap_model_for_generation(
+        model,
+        accelerator,
+        gather_deepspeed3_params=args.ds3_gather_for_generation,
+        generation_kwargs={
+            "max_new_tokens": response_length,
+            "temperature": args.temperature + 1e-7,
+            "top_k": 0.0,
+            "top_p": 1.0,
+            "do_sample": True,
+        },
+    ) as generation_model:
+        query_responses, compact_logprobs = ppo_module.batch_generation(
+            generation_model.policy,
+            queries,
+            args.local_rollout_forward_batch_size,
+            processing_class.pad_token_id,
+            generation_config,
+        )
+    memory_trace.end_phase()
+
+    responses = []
+    postprocessed_responses = []
+    logprobs = []
+    ref_logprobs = []
+    scores = []
+    sequence_lengths = []
+    values = []
+    memory_trace.begin_phase("rollout_scoring")
+    for start in range(0, queries.shape[0], args.local_rollout_forward_batch_size):
+        end = start + args.local_rollout_forward_batch_size
+        query = queries[start:end]
+        query_response = query_responses[start:end]
+        response = query_response[:, context_length:]
+        logprob = ppo_module.selective_log_softmax(
+            compact_logprobs[start:end], response
+        )
+
+        if ref_policy is None:
+            with trainer.null_ref_context():
+                ref_logits = _response_policy_logits(
+                    unwrapped.policy,
+                    query_response,
+                    context_length=context_length,
+                    pad_token_id=processing_class.pad_token_id,
+                    response_length=response_length,
+                )
+        else:
+            ref_logits = _response_policy_logits(
+                accelerator.unwrap_model(ref_policy),
+                query_response,
+                context_length=context_length,
+                pad_token_id=processing_class.pad_token_id,
+                response_length=response_length,
+            )
+        ref_logits = ref_logits / (args.temperature + 1e-7)
+        ref_logprob = ppo_module.selective_log_softmax(ref_logits, response)
+
+        postprocessed_response = response
+        if trainer.stop_token_id is not None:
+            postprocessed_response = ppo_module.truncate_response(
+                trainer.stop_token_id,
+                processing_class.pad_token_id,
+                response,
+            )
+        postprocessed_query_response = torch.cat((query, postprocessed_response), dim=1)
+        sequence_length = (
+            ppo_module.first_true_indices(
+                postprocessed_response == processing_class.pad_token_id
+            )
+            - 1
+        )
+        value = _response_values(
+            unwrapped.value_model,
+            query_response,
+            context_length=context_length,
+            pad_token_id=processing_class.pad_token_id,
+            response_length=response_length,
+        )
+        _, score, _ = ppo_module.get_reward(
+            reward_model,
+            postprocessed_query_response,
+            processing_class.pad_token_id,
+            context_length,
+        )
+
+        responses.append(response)
+        postprocessed_responses.append(postprocessed_response)
+        logprobs.append(logprob)
+        ref_logprobs.append(ref_logprob)
+        sequence_lengths.append(sequence_length)
+        scores.append(score)
+        values.append(value)
+        del ref_logits, query, query_response, postprocessed_query_response
+
+    responses = torch.cat(responses, dim=0)
+    postprocessed_responses = torch.cat(postprocessed_responses, dim=0)
+    logprobs = torch.cat(logprobs, dim=0)
+    ref_logprobs = torch.cat(ref_logprobs, dim=0)
+    sequence_lengths = torch.cat(sequence_lengths, dim=0)
+    scores = torch.cat(scores, dim=0)
+    values = torch.cat(values, dim=0)
+    del compact_logprobs
+    gc.collect()
+    memory_trace.end_phase()
+
+    memory_trace.begin_phase("rollout_advantages")
+    contain_eos_token = torch.any(
+        postprocessed_responses == processing_class.eos_token_id, dim=-1
+    )
+    if args.missing_eos_penalty is not None:
+        scores[~contain_eos_token] -= args.missing_eos_penalty
+
+    response_indices = torch.arange(responses.shape[1], device=responses.device).repeat(
+        responses.shape[0], 1
+    )
+    padding_mask = response_indices > sequence_lengths.unsqueeze(1)
+    logprobs = torch.masked_fill(logprobs, padding_mask, ppo_module.INVALID_LOGPROB)
+    ref_logprobs = torch.masked_fill(
+        ref_logprobs, padding_mask, ppo_module.INVALID_LOGPROB
+    )
+    sequence_lengths_p1 = sequence_lengths + 1
+    padding_mask_p1 = response_indices > sequence_lengths_p1.unsqueeze(1)
+    values = torch.masked_fill(values, padding_mask_p1, 0)
+
+    log_ratio = ref_logprobs - logprobs
+    if args.kl_estimator == "k1":
+        kl = -log_ratio
+    else:
+        kl = (log_ratio.exp() - 1) - log_ratio
+    non_score_reward = -args.kl_coef * kl
+    rewards = non_score_reward.clone()
+    actual_start = torch.arange(rewards.size(0), device=rewards.device)
+    actual_end = torch.where(
+        sequence_lengths_p1 < rewards.size(1),
+        sequence_lengths_p1,
+        sequence_lengths,
+    )
+    rewards[actual_start, actual_end] += scores
+    if args.whiten_rewards:
+        rewards = ppo_module.masked_whiten(
+            rewards, mask=~padding_mask_p1, shift_mean=False
+        )
+        rewards = torch.masked_fill(rewards, padding_mask_p1, 0)
+
+    last_gae_lambda = 0
+    reversed_advantages = []
+    for token_index in reversed(range(responses.shape[1])):
+        next_values = (
+            values[:, token_index + 1] if token_index < responses.shape[1] - 1 else 0.0
+        )
+        delta = (
+            rewards[:, token_index] + args.gamma * next_values - values[:, token_index]
+        )
+        last_gae_lambda = delta + args.gamma * args.lam * last_gae_lambda
+        reversed_advantages.append(last_gae_lambda)
+    advantages = torch.stack(reversed_advantages[::-1], dim=1)
+    returns = advantages + values
+    advantages = ppo_module.masked_whiten(advantages, ~padding_mask)
+    advantages = torch.masked_fill(advantages, padding_mask, 0)
+    memory_trace.end_phase()
+
+    return {
+        "queries": queries,
+        "query_responses": query_responses,
+        "responses": responses,
+        "postprocessed_responses": postprocessed_responses,
+        "logprobs": logprobs,
+        "ref_logprobs": ref_logprobs,
+        "scores": scores,
+        "sequence_lengths": sequence_lengths,
+        "values": values,
+        "contain_eos_token": contain_eos_token,
+        "sequence_lengths_p1": sequence_lengths_p1,
+        "response_indices": response_indices,
+        "padding_mask": padding_mask,
+        "padding_mask_p1": padding_mask_p1,
+        "rewards": rewards,
+        "advantages": advantages,
+        "returns": returns,
+        "kl": kl,
+        "non_score_reward": non_score_reward,
+        "context_length": context_length,
+    }
+
+
+def _optimize_ppo_rollout(trainer, ppo_module, rollout, memory_trace):
+    args = trainer.args
+    accelerator = trainer.accelerator
+    optimizer = trainer.optimizer
+    model = trainer.model
+    unwrapped = accelerator.unwrap_model(model)
+    device = accelerator.device
+    stats_shape = (
+        args.num_ppo_epochs,
+        args.num_mini_batches,
+        args.gradient_accumulation_steps,
+    )
+    stats = {
+        "approxkl": torch.zeros(stats_shape, device=device),
+        "pg_clipfrac": torch.zeros(stats_shape, device=device),
+        "pg_loss": torch.zeros(stats_shape, device=device),
+        "vf_loss": torch.zeros(stats_shape, device=device),
+        "vf_clipfrac": torch.zeros(stats_shape, device=device),
+        "entropy": torch.zeros(stats_shape, device=device),
+        "ratio": torch.zeros(stats_shape, device=device),
+    }
+    prompt_lengths = torch.sum(
+        rollout["queries"] != trainer.processing_class.pad_token_id, dim=1
+    )
+
+    for ppo_epoch_index in range(args.num_ppo_epochs):
+        batch_indices = np.random.permutation(args.local_batch_size)
+        minibatch_index = 0
+        for minibatch_start in range(
+            0, args.local_batch_size, args.local_mini_batch_size
+        ):
+            minibatch_indices = batch_indices[
+                minibatch_start : minibatch_start + args.local_mini_batch_size
+            ]
+            lengths = prompt_lengths[minibatch_indices].detach().cpu().numpy()
+            minibatch_indices = minibatch_indices[np.argsort(lengths, kind="stable")]
+            accumulation_index = 0
+            for microbatch_start in range(
+                0, args.local_mini_batch_size, args.per_device_train_batch_size
+            ):
+                with accelerator.accumulate(model):
+                    microbatch_indices = minibatch_indices[
+                        microbatch_start : microbatch_start
+                        + args.per_device_train_batch_size
+                    ]
+                    advantages = rollout["advantages"][microbatch_indices]
+                    responses = rollout["responses"][microbatch_indices]
+                    query_responses = rollout["query_responses"][microbatch_indices]
+                    old_logprobs = rollout["logprobs"][microbatch_indices]
+                    returns = rollout["returns"][microbatch_indices]
+                    old_values = rollout["values"][microbatch_indices]
+                    padding_mask = rollout["padding_mask"][microbatch_indices]
+                    padding_mask_p1 = rollout["padding_mask_p1"][microbatch_indices]
+
+                    memory_trace.begin_phase("policy_backward")
+                    logits = _response_policy_logits(
+                        unwrapped.policy,
+                        query_responses,
+                        context_length=rollout["context_length"],
+                        pad_token_id=trainer.processing_class.pad_token_id,
+                        response_length=args.response_length,
+                    )
+                    logits = logits / (args.temperature + 1e-7)
+                    new_logprobs = ppo_module.selective_log_softmax(logits, responses)
+                    new_logprobs = torch.masked_fill(
+                        new_logprobs, padding_mask, ppo_module.INVALID_LOGPROB
+                    )
+                    logprob_difference = new_logprobs - old_logprobs
+                    ratio = torch.exp(logprob_difference)
+                    policy_losses = -advantages * ratio
+                    clipped_policy_losses = -advantages * torch.clamp(
+                        ratio,
+                        1.0 - args.cliprange,
+                        1.0 + args.cliprange,
+                    )
+                    policy_loss_max = torch.max(policy_losses, clipped_policy_losses)
+                    policy_loss = ppo_module.masked_mean(policy_loss_max, ~padding_mask)
+                    accelerator.backward(policy_loss)
+                    entropy = _mean_categorical_entropy(logits)
+                    with torch.no_grad():
+                        policy_clip_fraction = ppo_module.masked_mean(
+                            (clipped_policy_losses > policy_losses).float(),
+                            ~padding_mask,
+                        )
+                        approximate_kl = 0.5 * (logprob_difference**2).mean()
+                        ratio_mean = ratio.mean()
+                    memory_trace.end_phase()
+                    del (
+                        logits,
+                        new_logprobs,
+                        logprob_difference,
+                        ratio,
+                        policy_losses,
+                        clipped_policy_losses,
+                        policy_loss_max,
+                    )
+
+                    memory_trace.begin_phase("value_backward")
+                    predicted_values = _response_values(
+                        unwrapped.value_model,
+                        query_responses,
+                        context_length=rollout["context_length"],
+                        pad_token_id=trainer.processing_class.pad_token_id,
+                        response_length=args.response_length,
+                    )
+                    predicted_values = torch.masked_fill(
+                        predicted_values, padding_mask_p1, 0
+                    )
+                    clipped_values = torch.clamp(
+                        predicted_values,
+                        old_values - args.cliprange_value,
+                        old_values + args.cliprange_value,
+                    )
+                    value_losses = torch.square(predicted_values - returns)
+                    clipped_value_losses = torch.square(clipped_values - returns)
+                    value_loss_max = torch.max(value_losses, clipped_value_losses)
+                    value_loss = 0.5 * ppo_module.masked_mean(
+                        value_loss_max, ~padding_mask_p1
+                    )
+                    accelerator.backward(args.vf_coef * value_loss)
+                    with torch.no_grad():
+                        value_clip_fraction = ppo_module.masked_mean(
+                            (clipped_value_losses > value_losses).float(),
+                            ~padding_mask_p1,
+                        )
+                    memory_trace.end_phase()
+
+                    if accelerator.sync_gradients:
+                        memory_trace.begin_phase("optimizer_step")
+                    optimizer.step()
+                    optimizer.zero_grad()
+                    if accelerator.sync_gradients:
+                        memory_trace.end_phase()
+
+                    stats["approxkl"][
+                        ppo_epoch_index, minibatch_index, accumulation_index
+                    ] = approximate_kl
+                    stats["pg_clipfrac"][
+                        ppo_epoch_index, minibatch_index, accumulation_index
+                    ] = policy_clip_fraction
+                    stats["pg_loss"][
+                        ppo_epoch_index, minibatch_index, accumulation_index
+                    ] = policy_loss.detach()
+                    stats["vf_loss"][
+                        ppo_epoch_index, minibatch_index, accumulation_index
+                    ] = value_loss.detach()
+                    stats["vf_clipfrac"][
+                        ppo_epoch_index, minibatch_index, accumulation_index
+                    ] = value_clip_fraction
+                    stats["entropy"][
+                        ppo_epoch_index, minibatch_index, accumulation_index
+                    ] = entropy
+                    stats["ratio"][
+                        ppo_epoch_index, minibatch_index, accumulation_index
+                    ] = ratio_mean
+                    del (
+                        predicted_values,
+                        clipped_values,
+                        value_losses,
+                        clipped_value_losses,
+                        value_loss_max,
+                        policy_loss,
+                        value_loss,
+                        approximate_kl,
+                        policy_clip_fraction,
+                        value_clip_fraction,
+                        entropy,
+                        ratio_mean,
+                        advantages,
+                        responses,
+                        query_responses,
+                        old_logprobs,
+                        returns,
+                        old_values,
+                        padding_mask,
+                        padding_mask_p1,
+                    )
+                accumulation_index += 1
+            minibatch_index += 1
+        ppo_module.empty_cache()
+    return stats
+
+
+def _memory_efficient_ppo_train(trainer, ppo_module, output_dir):
+    args = trainer.args
+    accelerator = trainer.accelerator
+    model = trainer.model
+    processing_class = trainer.processing_class
+    dataloader = trainer.dataloader
+
+    def repeat_generator():
+        while True:
+            yield from dataloader
+
+    trainer._rlhf_iter_dataloader = iter(repeat_generator())
+    generation_kwargs = {
+        "max_new_tokens": args.response_length,
+        "temperature": args.temperature + 1e-7,
+        "top_k": 0.0,
+        "top_p": 1.0,
+        "do_sample": True,
+    }
+    generation_config = ppo_module.GenerationConfig(**generation_kwargs)
+    memory_trace = _PpoMemoryTrace(output_dir)
+
+    accelerator.print("===training policy with compact split-graph PPO===")
+    start_time = time.time()
+    model.train()
+    trainer.state.global_step = 0
+    trainer.state.episode = 0
+    trainer.state.max_steps = args.num_total_batches
+    trainer.state.num_train_epochs = args.total_episodes / trainer.train_dataset_len
+    if args.logging_steps is not None:
+        trainer.state.logging_steps = (
+            math.ceil(trainer.state.max_steps * args.logging_steps)
+            if args.logging_steps < 1
+            else args.logging_steps
+        )
+    if args.eval_steps is not None:
+        trainer.state.eval_steps = (
+            math.ceil(trainer.state.max_steps * args.eval_steps)
+            if args.eval_steps < 1
+            else args.eval_steps
+        )
+    if args.save_steps is not None:
+        trainer.state.save_steps = (
+            math.ceil(trainer.state.max_steps * args.save_steps)
+            if args.save_steps < 1
+            else args.save_steps
+        )
+    trainer.control = trainer.callback_handler.on_train_begin(
+        args, trainer.state, trainer.control
+    )
+    if trainer.is_deepspeed_enabled:
+        trainer.deepspeed = trainer.model
+        trainer.model_wrapped = trainer.model
+
+    for _ in range(1, args.num_total_batches + 1):
+        absolute_update = int(trainer.state.global_step) + 1
+        memory_trace.begin_update(absolute_update)
+        trainer.state.episode += args.batch_size
+        try:
+            rollout = _collect_ppo_rollout(
+                trainer, ppo_module, generation_config, memory_trace
+            )
+            stats = _optimize_ppo_rollout(trainer, ppo_module, rollout, memory_trace)
+        except torch.OutOfMemoryError as error:
+            memory_trace.capture_oom(error)
+            raise
+
+        with torch.no_grad():
+            mean_kl = rollout["kl"].sum(1).mean()
+            mean_entropy = (-rollout["logprobs"]).sum(1).mean()
+            mean_non_score_reward = rollout["non_score_reward"].sum(1).mean()
+            rlhf_reward = mean_non_score_reward + rollout["scores"].mean()
+            metrics = {
+                "eps": int(trainer.state.episode / (time.time() - start_time)),
+                "objective/kl": accelerator.gather_for_metrics(mean_kl).mean().item(),
+                "objective/entropy": accelerator.gather_for_metrics(mean_entropy)
+                .mean()
+                .item(),
+                "objective/non_score_reward": accelerator.gather_for_metrics(
+                    mean_non_score_reward
+                )
+                .mean()
+                .item(),
+                "objective/rlhf_reward": accelerator.gather_for_metrics(rlhf_reward)
+                .mean()
+                .item(),
+                "objective/scores": accelerator.gather_for_metrics(
+                    rollout["scores"].mean()
+                )
+                .mean()
+                .item(),
+                "policy/approxkl_avg": accelerator.gather_for_metrics(stats["approxkl"])
+                .mean()
+                .item(),
+                "policy/clipfrac_avg": accelerator.gather_for_metrics(
+                    stats["pg_clipfrac"]
+                )
+                .mean()
+                .item(),
+                "loss/policy_avg": accelerator.gather_for_metrics(stats["pg_loss"])
+                .mean()
+                .item(),
+                "loss/value_avg": accelerator.gather_for_metrics(stats["vf_loss"])
+                .mean()
+                .item(),
+                "val/clipfrac_avg": accelerator.gather_for_metrics(stats["vf_clipfrac"])
+                .mean()
+                .item(),
+                "policy/entropy_avg": accelerator.gather_for_metrics(stats["entropy"])
+                .mean()
+                .item(),
+                "val/ratio": accelerator.gather_for_metrics(stats["ratio"])
+                .mean()
+                .item(),
+                "val/ratio_var": accelerator.gather_for_metrics(stats["ratio"])
+                .var()
+                .item(),
+                "val/num_eos_tokens": (
+                    rollout["responses"] == processing_class.eos_token_id
+                )
+                .sum()
+                .item(),
+                "lr": trainer.lr_scheduler.get_last_lr()[0],
+                "episode": trainer.state.episode,
+            }
+            metrics.update(memory_trace.finish_update())
+            trainer.state.epoch = trainer.state.episode / trainer.train_dataset_len
+            trainer.state.global_step += 1
+            trainer.log(metrics)
+
+        trainer.lr_scheduler.step()
+        trainer.control = trainer.callback_handler.on_step_end(
+            args, trainer.state, trainer.control
+        )
+        if trainer.control.should_save:
+            trainer._save_checkpoint(model, trial=None)
+            trainer.control = trainer.callback_handler.on_save(
+                trainer.args, trainer.state, trainer.control
+            )
+        del rollout, stats, metrics
+        ppo_module.empty_cache()
+        gc.collect()
+
+        if args.num_sample_generations > 0:
+            local_update = int(trainer.state.global_step)
+            if (local_update - 1) % trainer.sample_generations_freq == 0:
+                trainer.generate_completions(sampling=True)
+                ppo_module.empty_cache()
+
+    trainer.control = trainer.callback_handler.on_train_end(
+        args, trainer.state, trainer.control
+    )
+    if trainer.control.should_save:
+        trainer._save_checkpoint(model, trial=None)
+        trainer.control = trainer.callback_handler.on_save(
+            trainer.args, trainer.state, trainer.control
+        )
+
+
+def _patch_trl_memory_efficient_training(ppo_module, output_dir):
+    if getattr(ppo_module, "_rlhf_split_graph_training_patch", False):
+        raise RuntimeError("TRL PPO training was already patched in this process.")
+
+    def train(trainer):
+        return _memory_efficient_ppo_train(trainer, ppo_module, output_dir)
+
+    ppo_module.PPOTrainer.train = train
+    ppo_module._rlhf_split_graph_training_patch = True
+
+
 def _query_key(token_ids, pad_token_id):
     return tuple(int(token) for token in token_ids if int(token) != int(pad_token_id))
 
@@ -816,12 +1549,25 @@ def _patch_trl_reward_guardrails(ppo_module):
     original_get_reward = ppo_module.get_reward
 
     def guarded_get_reward(model, query_responses, pad_token_id, context_length):
+        compact, compact_context_length, removed_columns = (
+            _remove_common_prompt_padding(query_responses, context_length, pad_token_id)
+        )
         reward_logits, final_rewards, sequence_lengths = original_get_reward(
             model,
-            query_responses,
+            compact,
             pad_token_id,
-            context_length,
+            compact_context_length,
         )
+        if removed_columns:
+            padding_shape = list(reward_logits.shape)
+            padding_shape[1] = removed_columns
+            leading = torch.zeros(
+                padding_shape,
+                dtype=reward_logits.dtype,
+                device=reward_logits.device,
+            )
+            reward_logits = torch.cat((leading, reward_logits), dim=1)
+            sequence_lengths = sequence_lengths + removed_columns
         settings = getattr(model, "rlhf_reward_guardrails", None)
         collector = getattr(model, "rlhf_reward_diagnostics", None)
         if not settings or collector is None:
@@ -1148,6 +1894,7 @@ def _make_segment_callbacks(
             artifact_dir.mkdir(parents=True, exist_ok=True)
             for name in (
                 DIAGNOSTICS_NAME,
+                MEMORY_TRACE_NAME,
                 "ppo_reward_guardrails.json",
                 "ppo_rollout_plan.json",
                 "ppo_segment_plan.json",
@@ -1212,11 +1959,13 @@ def _install_diagnostics_logging(
             logs.update(diagnostics)
             logs.update(rollout_profile)
             if torch.cuda.is_available():
-                logs["memory/update_peak_cuda_allocated_gib"] = (
-                    torch.cuda.max_memory_allocated() / 2**30
+                logs.setdefault(
+                    "memory/update_peak_cuda_allocated_gib",
+                    torch.cuda.max_memory_allocated() / 2**30,
                 )
-                logs["memory/update_peak_cuda_reserved_gib"] = (
-                    torch.cuda.max_memory_reserved() / 2**30
+                logs.setdefault(
+                    "memory/update_peak_cuda_reserved_gib",
+                    torch.cuda.max_memory_reserved() / 2**30,
                 )
             mean_length = diagnostics.get("rollout/response_length_mean", 0.0)
             if mean_length > 0 and "objective/kl" in logs:
@@ -1356,15 +2105,22 @@ def run_trl_ppo(cfg, *, config_path=None):
         )
     rollout_settings = {
         "generation_batch_size_candidates": _normalized_chunk_candidates(
-            rollout_cfg.get("generation_batch_size_candidates", [8, 4, 2]), 8
+            rollout_cfg.get("generation_batch_size_candidates", [32, 16, 8]), 32
         ),
         "logprob_batch_size_candidates": _normalized_chunk_candidates(
-            rollout_cfg.get("logprob_batch_size_candidates", [4, 2, 1]), 4
+            rollout_cfg.get("logprob_batch_size_candidates", [16, 8, 4]), 16
         ),
         "enable_generation_cache": bool(
             rollout_cfg.get("enable_generation_cache", True)
         ),
         "require_logits_to_keep": bool(rollout_cfg.get("require_logits_to_keep", True)),
+        "dynamic_padding": bool(rollout_cfg.get("dynamic_padding", True)),
+        "response_only_training_logits": bool(
+            rollout_cfg.get("response_only_training_logits", True)
+        ),
+        "split_policy_value_backward": bool(
+            rollout_cfg.get("split_policy_value_backward", True)
+        ),
     }
     if not rollout_settings["enable_generation_cache"]:
         raise ValueError("Memory-efficient PPO requires rollout generation KV caching.")
@@ -1373,6 +2129,13 @@ def run_trl_ppo(cfg, *, config_path=None):
             "The guarded Qwen PPO path requires logits_to_keep so old-policy "
             "log-probability recomputation cannot materialize prompt logits."
         )
+    for key in (
+        "dynamic_padding",
+        "response_only_training_logits",
+        "split_policy_value_backward",
+    ):
+        if not rollout_settings[key]:
+            raise ValueError(f"Guarded long-response PPO requires {key}=true.")
     save_config(cfg, output_dir / "config_resolved.yaml")
     initialize_experiment(
         output_dir,
@@ -1486,6 +2249,7 @@ def run_trl_ppo(cfg, *, config_path=None):
         ppo_trainer_module, rollout_settings
     )
     _patch_trl_reward_guardrails(ppo_trainer_module)
+    _patch_trl_memory_efficient_training(ppo_trainer_module, output_dir)
     guardrails = _derive_reward_guardrails(
         cfg,
         reward_model=reward_model,
@@ -1493,8 +2257,8 @@ def run_trl_ppo(cfg, *, config_path=None):
         output_dir=output_dir,
     )
 
-    batch_size = int(train_cfg.get("per_device_train_batch_size", 2)) * int(
-        train_cfg.get("gradient_accumulation_steps", 32)
+    batch_size = int(train_cfg.get("per_device_train_batch_size", 4)) * int(
+        train_cfg.get("gradient_accumulation_steps", 16)
     )
     response_length = int(ppo_cfg.get("response_length", 768))
     vocabulary_size = len(tokenizer)
@@ -1509,12 +2273,21 @@ def run_trl_ppo(cfg, *, config_path=None):
             else "separate frozen reference model"
         ),
         "rollout_batch_size": batch_size,
+        "optimizer_microbatch_size": int(
+            train_cfg.get("per_device_train_batch_size", 4)
+        ),
+        "gradient_accumulation_steps": int(
+            train_cfg.get("gradient_accumulation_steps", 16)
+        ),
         "response_length": response_length,
+        "policy_logit_positions_per_microbatch_example": response_length + 1,
         "tokenizer_vocabulary_size": vocabulary_size,
         "stock_dense_logit_elements": dense_float32_elements,
         "stock_dense_float32_logit_gib": dense_float32_elements * 4 / 2**30,
         "compact_selected_logprob_elements": batch_size * response_length,
         "generation_output_scores": False,
+        "ppo_policy_value_backward": "separate graphs, one accumulated optimizer step",
+        "padding_strategy": "remove prompt columns masked for every row in each chunk",
         "old_policy_logprobs": (
             "recomputed in chunks from response-position logits only"
         ),
@@ -1591,11 +2364,11 @@ def run_trl_ppo(cfg, *, config_path=None):
         seed=int(train_cfg.get("seed", 839)),
         data_seed=int(train_cfg.get("data_seed", train_cfg.get("seed", 839))),
         per_device_train_batch_size=int(
-            train_cfg.get("per_device_train_batch_size", 2)
+            train_cfg.get("per_device_train_batch_size", 4)
         ),
         per_device_eval_batch_size=int(train_cfg.get("per_device_eval_batch_size", 4)),
         gradient_accumulation_steps=int(
-            train_cfg.get("gradient_accumulation_steps", 32)
+            train_cfg.get("gradient_accumulation_steps", 16)
         ),
         learning_rate=float(train_cfg.get("learning_rate", 3e-6)),
         weight_decay=float(train_cfg.get("weight_decay", 0.0)),
@@ -1617,7 +2390,7 @@ def run_trl_ppo(cfg, *, config_path=None):
         num_ppo_epochs=int(ppo_cfg.get("num_ppo_epochs", 4)),
         num_mini_batches=int(ppo_cfg.get("num_mini_batches", 1)),
         local_rollout_forward_batch_size=int(
-            ppo_cfg.get("local_rollout_forward_batch_size", 2)
+            ppo_cfg.get("local_rollout_forward_batch_size", 8)
         ),
         response_length=int(ppo_cfg.get("response_length", 768)),
         stop_token=str(ppo_cfg.get("stop_token", "eos")),
@@ -1727,7 +2500,11 @@ def run_trl_ppo(cfg, *, config_path=None):
     }
     write_json(segment_report, output_dir / "ppo_segment_plan.json")
     print(json.dumps(segment_report, indent=2))
-    trainer.train()
+    try:
+        trainer.train()
+    except torch.OutOfMemoryError:
+        maybe_sync_tree(output_dir, train_cfg.get("final_sync_dir"))
+        raise
 
     checkpoint = output_dir / f"checkpoint-{target_update}"
     health = _checkpoint_health(checkpoint)

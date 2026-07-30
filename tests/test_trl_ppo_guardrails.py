@@ -1,10 +1,16 @@
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import torch
 
 from rlhf.trl_train_ppo import (
     _RewardDiagnostics,
+    _mean_categorical_entropy,
+    _optimize_ppo_rollout,
     _patch_trl_memory_efficient_rollout,
+    _remove_common_prompt_padding,
+    _response_policy_logits,
+    _response_values,
     build_balanced_rollout_plan,
     latest_exact_ppo_checkpoint,
     memory_efficient_batch_generation,
@@ -39,6 +45,7 @@ class _DummyPolicy(torch.nn.Module):
         self.generate_calls.append(
             {
                 "batch_size": input_ids.shape[0],
+                "sequence_length": input_ids.shape[1],
                 "training": self.training,
                 "use_cache": generation_config.use_cache,
                 "output_scores": generation_config.output_scores,
@@ -62,6 +69,7 @@ class _DummyPolicy(torch.nn.Module):
         self.forward_calls.append(
             {
                 "batch_size": input_ids.shape[0],
+                "sequence_length": input_ids.shape[1],
                 "logits_to_keep": logits_to_keep,
                 "use_cache": use_cache,
             }
@@ -237,6 +245,208 @@ def test_memory_efficient_rollout_retains_only_selected_logprobs():
     assert all(not row["return_dict_in_generate"] for row in policy.generate_calls)
     assert all(row["logits_to_keep"] == 4 for row in policy.forward_calls)
     assert all(not row["use_cache"] for row in policy.forward_calls)
+    assert [row["sequence_length"] for row in policy.generate_calls] == [2, 3]
+    assert [row["sequence_length"] for row in policy.forward_calls] == [5, 6]
+
+
+def test_common_padding_removal_preserves_response_and_predictor_alignment():
+    query_responses = torch.tensor(
+        [
+            [0, 0, 5, 6, 7, 8, 9],
+            [0, 3, 4, 5, 6, 7, 8],
+        ],
+        dtype=torch.long,
+    )
+    compact, compact_context, removed = _remove_common_prompt_padding(
+        query_responses, context_length=4, pad_token_id=0
+    )
+
+    assert removed == 1
+    assert compact_context == 3
+    assert torch.equal(compact[:, -3:], query_responses[:, -3:])
+
+    policy = _DummyPolicy()
+    logits = _response_policy_logits(
+        policy,
+        query_responses,
+        context_length=4,
+        pad_token_id=0,
+        response_length=3,
+    )
+    assert logits.shape == (2, 3, policy.vocabulary_size)
+    assert policy.forward_calls[-1]["sequence_length"] == 6
+    assert policy.forward_calls[-1]["logits_to_keep"] == 4
+
+
+class _IdentityBackbone(torch.nn.Module):
+    def forward(
+        self,
+        input_ids,
+        attention_mask,
+        position_ids,
+        return_dict,
+        output_hidden_states,
+        use_cache,
+    ):
+        return SimpleNamespace(last_hidden_state=input_ids.float().unsqueeze(-1))
+
+
+class _IdentityScore(torch.nn.Module):
+    def forward(self, hidden_states):
+        return hidden_states
+
+
+class _DummyValueModel(torch.nn.Module):
+    base_model_prefix = "backbone"
+
+    def __init__(self):
+        super().__init__()
+        self.backbone = _IdentityBackbone()
+        self.score = _IdentityScore()
+
+
+def test_compact_value_forward_returns_same_response_predictor_positions():
+    query_responses = torch.tensor(
+        [
+            [0, 0, 5, 6, 7, 8, 9],
+            [0, 3, 4, 5, 6, 7, 8],
+        ],
+        dtype=torch.long,
+    )
+    values = _response_values(
+        _DummyValueModel(),
+        query_responses,
+        context_length=4,
+        pad_token_id=0,
+        response_length=3,
+    )
+    assert torch.equal(values, query_responses[:, 3:-1].float())
+
+
+def test_chunked_entropy_matches_dense_categorical_entropy():
+    torch.manual_seed(51)
+    logits = torch.randn(2, 9, 17)
+    probabilities = torch.softmax(logits, dim=-1)
+    expected = (
+        torch.logsumexp(logits, dim=-1) - torch.sum(probabilities * logits, dim=-1)
+    ).mean()
+    actual = _mean_categorical_entropy(logits, chunk_size=3)
+    assert torch.allclose(actual, expected)
+
+
+class _TrainablePolicy(_DummyPolicy):
+    def __init__(self, vocabulary_size=11):
+        super().__init__(vocabulary_size=vocabulary_size)
+        self.scale = torch.nn.Parameter(torch.tensor(0.7))
+
+    def forward(
+        self,
+        input_ids,
+        attention_mask,
+        position_ids,
+        return_dict,
+        output_hidden_states,
+        use_cache,
+        logits_to_keep,
+    ):
+        retained = input_ids[:, -int(logits_to_keep) :].float()
+        vocabulary = torch.arange(self.vocabulary_size).view(1, 1, -1)
+        logits = -self.scale * (vocabulary - retained.unsqueeze(-1)).square()
+        return SimpleNamespace(logits=logits)
+
+
+class _TrainableValueModel(_DummyValueModel):
+    def __init__(self):
+        super().__init__()
+        self.score = torch.nn.Linear(1, 1, bias=False)
+
+
+class _PolicyValue(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.policy = _TrainablePolicy()
+        self.value_model = _TrainableValueModel()
+
+
+class _CpuAccelerator:
+    device = torch.device("cpu")
+    sync_gradients = True
+
+    @contextmanager
+    def accumulate(self, model):
+        yield
+
+    def unwrap_model(self, model):
+        return model
+
+    def backward(self, loss):
+        loss.backward()
+
+
+class _NoopMemoryTrace:
+    def begin_phase(self, phase):
+        pass
+
+    def end_phase(self):
+        pass
+
+
+def _masked_mean(values, mask):
+    return (values * mask).sum() / mask.sum()
+
+
+def test_split_policy_value_optimization_updates_both_disjoint_models():
+    model = _PolicyValue()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    trainer = SimpleNamespace(
+        args=SimpleNamespace(
+            num_ppo_epochs=1,
+            num_mini_batches=1,
+            gradient_accumulation_steps=1,
+            local_batch_size=2,
+            local_mini_batch_size=2,
+            per_device_train_batch_size=2,
+            response_length=2,
+            temperature=1.0,
+            cliprange=0.2,
+            cliprange_value=0.2,
+            vf_coef=0.1,
+        ),
+        accelerator=_CpuAccelerator(),
+        optimizer=optimizer,
+        model=model,
+        processing_class=SimpleNamespace(pad_token_id=0),
+    )
+    query_responses = torch.tensor([[0, 1, 2, 3, 4], [5, 6, 7, 8, 9]], dtype=torch.long)
+    responses = query_responses[:, -2:]
+    mask = torch.zeros_like(responses, dtype=torch.bool)
+    rollout = {
+        "queries": query_responses[:, :3],
+        "query_responses": query_responses,
+        "responses": responses,
+        "logprobs": torch.zeros((2, 2)),
+        "returns": torch.ones((2, 2)),
+        "values": torch.zeros((2, 2)),
+        "advantages": torch.ones((2, 2)),
+        "padding_mask": mask,
+        "padding_mask_p1": mask,
+        "context_length": 3,
+    }
+    ppo_module = SimpleNamespace(
+        selective_log_softmax=_selective_log_softmax,
+        INVALID_LOGPROB=1.0,
+        masked_mean=_masked_mean,
+        empty_cache=lambda: None,
+    )
+    policy_before = model.policy.scale.detach().clone()
+    value_before = model.value_model.score.weight.detach().clone()
+
+    stats = _optimize_ppo_rollout(trainer, ppo_module, rollout, _NoopMemoryTrace())
+
+    assert not torch.equal(model.policy.scale.detach(), policy_before)
+    assert not torch.equal(model.value_model.score.weight.detach(), value_before)
+    assert stats["pg_loss"].shape == (1, 1, 1)
+    assert stats["vf_loss"].shape == (1, 1, 1)
 
 
 def test_generation_oom_fallback_restores_rng_before_smaller_chunk_retry():

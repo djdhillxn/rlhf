@@ -181,6 +181,18 @@ def _check_ppo_configuration(cfg, errors, tokenizer=None):
         errors.append("rollout_optimization.enable_generation_cache must be true")
     if not bool(rollout.get("require_logits_to_keep", False)):
         errors.append("rollout_optimization.require_logits_to_keep must be true")
+    for key in (
+        "dynamic_padding",
+        "response_only_training_logits",
+        "split_policy_value_backward",
+    ):
+        if not bool(rollout.get(key, False)):
+            errors.append(f"rollout_optimization.{key} must be true")
+    print(
+        "PPO optimizer partition: "
+        f"microbatch={int(train.get('per_device_train_batch_size', 1))}, "
+        f"accumulation={int(train.get('gradient_accumulation_steps', 1))}"
+    )
     policy_source = str(cfg.model.policy_model_path)
     reference_source = str(
         cfg.model.get("reference_model_path", cfg.model.policy_model_path)

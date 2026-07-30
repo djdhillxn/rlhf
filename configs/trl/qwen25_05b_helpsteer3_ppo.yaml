@@ -43,7 +43,7 @@ ppo:
   missing_eos_penalty: 0.0
   num_ppo_epochs: 4
   num_mini_batches: 1
-  local_rollout_forward_batch_size: 2
+  local_rollout_forward_batch_size: 8
   kl_coef: 0.10
   kl_estimator: k1
   cliprange: 0.2
@@ -59,8 +59,11 @@ rollout_optimization:
   share_reference_backbone: true
   enable_generation_cache: true
   require_logits_to_keep: true
-  generation_batch_size_candidates: [8, 4, 2]
-  logprob_batch_size_candidates: [4, 2, 1]
+  dynamic_padding: true
+  response_only_training_logits: true
+  split_policy_value_backward: true
+  generation_batch_size_candidates: [32, 16, 8]
+  logprob_batch_size_candidates: [16, 8, 4]
 
 reward_guardrails:
   enabled: true
@@ -84,9 +87,9 @@ train:
   run_name: qwen25-05b-helpsteer3-trl-ppo-guarded-r768
   seed: 839
   data_seed: 839
-  per_device_train_batch_size: 2
+  per_device_train_batch_size: 4
   per_device_eval_batch_size: 4
-  gradient_accumulation_steps: 32
+  gradient_accumulation_steps: 16
   learning_rate: 3.0e-6
   adam_epsilon: 1.0e-5
   weight_decay: 0.0

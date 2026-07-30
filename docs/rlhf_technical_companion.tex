@@ -714,7 +714,7 @@ empty-response collapse appeared. Stability, however, does not rule out
 reward-model exploitation, which is why evaluation and auditing determine the
 final interpretation.
 
-\subsection{Guarded 188-update follow-up and A100 memory redesign}
+\subsection{Guarded 188-update follow-up and H100 memory redesign}
 
 The evaluated run above motivated a more conservative follow-up rather than an
 unqualified extension of its final checkpoint. The active guarded configuration
@@ -743,23 +743,55 @@ least 52.61~GiB. Only 0.16~GiB was reserved but unused; this was a live-tensor
 capacity failure, not allocator fragmentation. Lowering the generation forward
 chunk did not help because \trl{} concatenated every chunk afterward.
 
-The optimized collector preserves generated token IDs but requests no
+The first collector optimization preserved generated token IDs but requested no
 generation scores. It enables KV caching only for no-gradient autoregressive
 decoding, then recomputes the old-policy probabilities in bounded chunks using
 only the response-position logits exposed by Qwen's
 \texttt{logits\_to\_keep}. The persistent behavior tensor therefore has shape
 $64\times768$, not $64\times768\times151{,}936$. The SFT reference remains the
 same policy backbone with the LoRA adapter disabled, which avoids a duplicate
-reference model. Generation tries chunk sizes 8, 4, and 2; old-policy
-log-probability recomputation tries 4, 2, and 1; downstream reference, value,
-and reward passes retain chunk size 2. An OOM fallback restores the pre-attempt
-RNG state before retrying a smaller chunk, preserving the sampled trajectory.
+reference model. An OOM fallback restores the pre-attempt RNG state before
+retrying a smaller generation chunk, preserving the sampled trajectory.
 
-This is a memory/execution optimization, not a change to PPO rewards, GAE,
+That change removed the 27.82~GiB rollout tensor, but a second A100 40GB launch
+failed during the first joint policy/value backward pass. At failure the process
+held 39.44~GiB, PyTorch had allocated 37.54~GiB and reserved another 1.39~GiB,
+and the language-model head requested 446~MiB. This exposed two independent
+costs: the stock wrapper retained policy and critic graphs simultaneously, and
+the policy computed vocabulary logits for prompt positions even though PPO uses
+only response-token probabilities.
+
+The final H100 path therefore applies three execution-only transformations.
+First, each generation, reference, reward, value, and PPO processing chunk
+removes prompt columns that are padding for every row in that chunk. Attention
+masks and cumulative position IDs make those columns inert, so removing them is
+equivalent to processing the padded tensor. Prompt lengths are grouped only
+inside an already fixed accumulated minibatch; all microbatch gradients still
+enter the same optimizer step. Second, policy and reference forwards request
+769 logits: one predictor position immediately before the first response token
+plus 768 response positions. The first 768 outputs predict the 768 sampled
+tokens; the final output would predict a nonexistent next token and is dropped.
+Third, policy loss and value loss are backpropagated sequentially. Their
+trainable parameter sets are disjoint, and both scaled gradients are accumulated
+before one optimizer step, preserving the gradient of
+$L_{\mathrm{policy}}+c_vL_{\mathrm{value}}$ without retaining both graphs.
+
+The final execution profile uses an H100 80GB, policy/value microbatches of 4,
+and 16 accumulation steps, retaining the effective batch of 64 and the same 188
+planned updates. Generation probes chunks 32, 16, and 8; old-policy
+log-probability recomputation probes 16, 8, and 4; downstream reference, value,
+and reward scoring uses chunks of 8. The notebook sets
+\path{PYTORCH_ALLOC_CONF=expandable_segments:True} before importing Torch.
+Each update appends phase-level allocated and reserved peaks for rollout,
+policy backward, value backward, and the real optimizer step. A fatal OOM writes
+a full allocator summary and pickled CUDA memory snapshot before synchronizing
+the run directory to Drive.
+
+These are memory/execution optimizations, not changes to PPO rewards, GAE,
 clipping, domain balance, or effective batch size. The notebook first performs
 one real update and saves it as an exact checkpoint. Its diagnostic row records
 generation and log-probability time, selected chunk sizes, tokens per second,
-OOM fallback count, rollout peak allocation, and total-update peak allocation.
+OOM fallback count, per-phase peak allocation, and total-update peak allocation.
 Only this measured profile can establish whether the 188-update run meets the
 one-day cost target on the selected Colab GPU.
 
