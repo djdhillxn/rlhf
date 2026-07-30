@@ -6,6 +6,7 @@ import json
 import math
 import random
 import shutil
+import time
 from pathlib import Path
 
 import torch
@@ -479,6 +480,327 @@ def _patch_trl_generate_for_fixed_length(ppo_module):
     ppo_module._rlhf_fixed_length_generate_patch = True
 
 
+def _normalized_chunk_candidates(values, fallback):
+    if values is None:
+        values = [fallback]
+    if isinstance(values, (int, float)):
+        values = [int(values)]
+    candidates = []
+    for value in values:
+        value = int(value)
+        if value <= 0:
+            raise ValueError("Rollout chunk sizes must be positive.")
+        if value not in candidates:
+            candidates.append(value)
+    if not candidates:
+        raise ValueError("At least one rollout chunk size is required.")
+    return candidates
+
+
+def _capture_torch_rng_state():
+    state = {"cpu": torch.random.get_rng_state()}
+    if torch.cuda.is_available():
+        state["cuda"] = torch.cuda.get_rng_state_all()
+    return state
+
+
+def _restore_torch_rng_state(state):
+    torch.random.set_rng_state(state["cpu"])
+    if torch.cuda.is_available() and "cuda" in state:
+        torch.cuda.set_rng_state_all(state["cuda"])
+
+
+def _cuda_synchronize():
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+
+
+def _clear_cuda_after_oom():
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
+
+
+def _generate_query_responses(
+    model,
+    queries,
+    *,
+    pad_token_id,
+    generation_config,
+    chunk_size,
+    enable_cache,
+):
+    query_responses = []
+    context_length = queries.shape[1]
+    config = copy.deepcopy(generation_config)
+    config.eos_token_id = None
+    config.forced_eos_token_id = None
+    config.use_cache = bool(enable_cache)
+    config.return_dict_in_generate = False
+    config.output_scores = False
+
+    for start in range(0, queries.shape[0], int(chunk_size)):
+        query = queries[start : start + int(chunk_size)]
+        attention_mask = query != int(pad_token_id)
+        input_ids = torch.masked_fill(query, ~attention_mask, 0)
+        generated = model.generate(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            generation_config=config,
+        )
+        response = generated[:, context_length:]
+        expected_length = int(config.max_new_tokens)
+        if response.shape[1] != expected_length:
+            raise RuntimeError(
+                "Memory-efficient PPO generation did not preserve the exact "
+                f"rollout length: expected {expected_length}, got {response.shape[1]}."
+            )
+        query_responses.append(torch.cat((query, response), dim=1))
+        del generated, response, input_ids, attention_mask
+    return torch.cat(query_responses, dim=0)
+
+
+def _selected_policy_logprobs(
+    model,
+    query_responses,
+    *,
+    context_length,
+    pad_token_id,
+    temperature,
+    chunk_size,
+    selective_log_softmax,
+    require_logits_to_keep,
+):
+    selected_logprobs = []
+    response_length = query_responses.shape[1] - int(context_length)
+    for start in range(0, query_responses.shape[0], int(chunk_size)):
+        query_response = query_responses[start : start + int(chunk_size)]
+        response = query_response[:, int(context_length) :]
+        attention_mask = query_response != int(pad_token_id)
+        position_ids = attention_mask.cumsum(1) - attention_mask.long()
+        input_ids = torch.masked_fill(query_response, ~attention_mask, 0)
+        forward_kwargs = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "position_ids": position_ids,
+            "return_dict": True,
+            "output_hidden_states": False,
+            "use_cache": False,
+        }
+        if require_logits_to_keep:
+            forward_kwargs["logits_to_keep"] = response_length + 1
+        output = model(**forward_kwargs)
+        logits = output.logits
+        if logits.shape[1] == response_length + 1:
+            response_logits = logits[:, :-1]
+        elif not require_logits_to_keep and logits.shape[1] == query_response.shape[1]:
+            response_logits = logits[:, int(context_length) - 1 : -1]
+        else:
+            raise RuntimeError(
+                "The policy did not honor logits_to_keep for compact PPO "
+                f"log-probability recomputation: received {tuple(logits.shape)}, "
+                f"expected sequence dimension {response_length + 1}."
+            )
+        response_logits = response_logits / max(float(temperature), 1e-7)
+        selected = selective_log_softmax(response_logits, response)
+        selected_logprobs.append(selected.detach())
+        del (
+            selected,
+            response_logits,
+            logits,
+            output,
+            input_ids,
+            attention_mask,
+            position_ids,
+        )
+    return torch.cat(selected_logprobs, dim=0)
+
+
+@torch.no_grad()
+def memory_efficient_batch_generation(
+    model,
+    queries,
+    *,
+    pad_token_id,
+    generation_config,
+    generation_batch_candidates,
+    logprob_batch_candidates,
+    selective_log_softmax,
+    enable_cache=True,
+    require_logits_to_keep=True,
+):
+    generation_candidates = _normalized_chunk_candidates(
+        generation_batch_candidates, queries.shape[0]
+    )
+    logprob_candidates = _normalized_chunk_candidates(logprob_batch_candidates, 1)
+    was_training = model.training
+    model.eval()
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
+
+    generation_rng = _capture_torch_rng_state()
+    generation_attempts = []
+    _cuda_synchronize()
+    generation_started = time.perf_counter()
+    query_responses = None
+    selected_generation_batch = None
+    try:
+        for chunk_size in generation_candidates:
+            _restore_torch_rng_state(generation_rng)
+            try:
+                query_responses = _generate_query_responses(
+                    model,
+                    queries,
+                    pad_token_id=pad_token_id,
+                    generation_config=generation_config,
+                    chunk_size=chunk_size,
+                    enable_cache=enable_cache,
+                )
+                selected_generation_batch = int(chunk_size)
+                generation_attempts.append(
+                    {"batch_size": int(chunk_size), "status": "selected"}
+                )
+                break
+            except torch.OutOfMemoryError:
+                query_responses = None
+                generation_attempts.append(
+                    {"batch_size": int(chunk_size), "status": "cuda_oom"}
+                )
+                _clear_cuda_after_oom()
+        if query_responses is None:
+            raise torch.OutOfMemoryError(
+                "All configured PPO generation batch sizes exhausted GPU memory: "
+                + ", ".join(str(value) for value in generation_candidates)
+            )
+        _cuda_synchronize()
+        generation_seconds = time.perf_counter() - generation_started
+
+        logprob_attempts = []
+        _cuda_synchronize()
+        logprob_started = time.perf_counter()
+        selected_logprobs = None
+        selected_logprob_batch = None
+        for chunk_size in logprob_candidates:
+            try:
+                selected_logprobs = _selected_policy_logprobs(
+                    model,
+                    query_responses,
+                    context_length=queries.shape[1],
+                    pad_token_id=pad_token_id,
+                    temperature=float(getattr(generation_config, "temperature", 1.0)),
+                    chunk_size=chunk_size,
+                    selective_log_softmax=selective_log_softmax,
+                    require_logits_to_keep=bool(require_logits_to_keep),
+                )
+                selected_logprob_batch = int(chunk_size)
+                logprob_attempts.append(
+                    {"batch_size": int(chunk_size), "status": "selected"}
+                )
+                break
+            except torch.OutOfMemoryError:
+                selected_logprobs = None
+                logprob_attempts.append(
+                    {"batch_size": int(chunk_size), "status": "cuda_oom"}
+                )
+                _clear_cuda_after_oom()
+        if selected_logprobs is None:
+            raise torch.OutOfMemoryError(
+                "All configured PPO log-probability batch sizes exhausted GPU "
+                "memory: " + ", ".join(str(value) for value in logprob_candidates)
+            )
+        _cuda_synchronize()
+        logprob_seconds = time.perf_counter() - logprob_started
+        response_length = query_responses.shape[1] - queries.shape[1]
+        profile = {
+            "rollout/generation_seconds": generation_seconds,
+            "rollout/old_policy_logprob_seconds": logprob_seconds,
+            "rollout/generation_batch_size": selected_generation_batch,
+            "rollout/logprob_forward_batch_size": selected_logprob_batch,
+            "rollout/generated_tokens_per_second": (
+                queries.shape[0] * response_length / max(generation_seconds, 1e-9)
+            ),
+            "rollout/generation_examples_per_second": (
+                queries.shape[0] / max(generation_seconds, 1e-9)
+            ),
+            "rollout/compact_logprob_elements": selected_logprobs.numel(),
+            "rollout/generation_cache_enabled": float(bool(enable_cache)),
+            "rollout/generation_oom_fallbacks": sum(
+                row["status"] == "cuda_oom" for row in generation_attempts
+            ),
+            "rollout/logprob_oom_fallbacks": sum(
+                row["status"] == "cuda_oom" for row in logprob_attempts
+            ),
+        }
+        if torch.cuda.is_available():
+            profile["rollout/peak_cuda_allocated_gib"] = (
+                torch.cuda.max_memory_allocated() / 2**30
+            )
+        return query_responses, selected_logprobs, profile
+    finally:
+        if was_training:
+            model.train()
+
+
+def _patch_trl_memory_efficient_rollout(ppo_module, settings):
+    if getattr(ppo_module, "_rlhf_memory_efficient_rollout_patch", False):
+        raise RuntimeError(
+            "TRL PPO rollout collection was already patched in this process."
+        )
+    if not hasattr(ppo_module, "batch_generation"):
+        raise RuntimeError(
+            "TRL PPO module does not expose batch_generation; cannot install "
+            "memory-efficient rollout collection."
+        )
+    if not hasattr(ppo_module, "selective_log_softmax"):
+        raise RuntimeError(
+            "TRL PPO module does not expose selective_log_softmax; cannot install "
+            "compact rollout log-probabilities."
+        )
+
+    original_selective_log_softmax = ppo_module.selective_log_softmax
+    profile_state = {"last": None}
+
+    def compact_batch_generation(
+        model,
+        queries,
+        local_rollout_forward_batch_size,
+        pad_token_id,
+        generation_config,
+    ):
+        query_responses, selected_logprobs, profile = memory_efficient_batch_generation(
+            model,
+            queries,
+            pad_token_id=pad_token_id,
+            generation_config=generation_config,
+            generation_batch_candidates=settings["generation_batch_size_candidates"],
+            logprob_batch_candidates=settings["logprob_batch_size_candidates"],
+            selective_log_softmax=original_selective_log_softmax,
+            enable_cache=settings["enable_generation_cache"],
+            require_logits_to_keep=settings["require_logits_to_keep"],
+        )
+        profile["rollout/downstream_forward_batch_size"] = int(
+            local_rollout_forward_batch_size
+        )
+        profile_state["last"] = profile
+        return query_responses, selected_logprobs
+
+    def compact_aware_selective_log_softmax(logits, index):
+        if logits.ndim == 2:
+            if logits.shape != index.shape:
+                raise RuntimeError(
+                    "Compact PPO log-probabilities do not match sampled response "
+                    f"shape: {tuple(logits.shape)} versus {tuple(index.shape)}."
+                )
+            return logits
+        return original_selective_log_softmax(logits, index)
+
+    ppo_module.batch_generation = compact_batch_generation
+    ppo_module.selective_log_softmax = compact_aware_selective_log_softmax
+    ppo_module._rlhf_memory_efficient_rollout_patch = True
+    return profile_state
+
+
 def _query_key(token_ids, pad_token_id):
     return tuple(int(token) for token in token_ids if int(token) != int(pad_token_id))
 
@@ -590,6 +912,7 @@ def _resume_fingerprint(cfg):
         },
         "lora": dict(cfg.get("lora", {})),
         "ppo": dict(cfg.get("ppo", {})),
+        "rollout_optimization": dict(cfg.get("rollout_optimization", {})),
         "reward_guardrails": dict(cfg.get("reward_guardrails", {})),
         "rollout_balance": dict(cfg.get("rollout_balance", {})),
         "train": {
@@ -830,6 +1153,7 @@ def _make_segment_callbacks(
                 "ppo_segment_plan.json",
                 "ppo_eos_trick.json",
                 "ppo_sampling_distribution.json",
+                "ppo_rollout_optimization.json",
             ):
                 source = Path(args.output_dir) / name
                 if source.is_file():
@@ -871,15 +1195,29 @@ def _make_segment_callbacks(
     return segment_callback, exact_callback
 
 
-def _install_diagnostics_logging(trainer, collector, output_dir):
+def _install_diagnostics_logging(
+    trainer, collector, output_dir, rollout_profile_state=None
+):
     diagnostics_path = Path(output_dir) / DIAGNOSTICS_NAME
     original_log = trainer.log
 
     def log_with_diagnostics(logs, *args, **kwargs):
         logs = dict(logs)
         diagnostics = collector.consume()
-        if diagnostics:
+        rollout_profile = {}
+        if rollout_profile_state is not None:
+            rollout_profile = dict(rollout_profile_state.get("last") or {})
+            rollout_profile_state["last"] = None
+        if diagnostics or rollout_profile:
             logs.update(diagnostics)
+            logs.update(rollout_profile)
+            if torch.cuda.is_available():
+                logs["memory/update_peak_cuda_allocated_gib"] = (
+                    torch.cuda.max_memory_allocated() / 2**30
+                )
+                logs["memory/update_peak_cuda_reserved_gib"] = (
+                    torch.cuda.max_memory_reserved() / 2**30
+                )
             mean_length = diagnostics.get("rollout/response_length_mean", 0.0)
             if mean_length > 0 and "objective/kl" in logs:
                 logs["objective/kl_per_response_token"] = (
@@ -1010,6 +1348,31 @@ def run_trl_ppo(cfg, *, config_path=None):
 
     output_dir = Path(cfg["train"]["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
+    rollout_cfg = dict(cfg.get("rollout_optimization", {}))
+    if not bool(rollout_cfg.get("enabled", True)):
+        raise ValueError(
+            "Guarded PPO requires rollout_optimization.enabled=true on the "
+            "long-response HelpSteer3 configuration."
+        )
+    rollout_settings = {
+        "generation_batch_size_candidates": _normalized_chunk_candidates(
+            rollout_cfg.get("generation_batch_size_candidates", [8, 4, 2]), 8
+        ),
+        "logprob_batch_size_candidates": _normalized_chunk_candidates(
+            rollout_cfg.get("logprob_batch_size_candidates", [4, 2, 1]), 4
+        ),
+        "enable_generation_cache": bool(
+            rollout_cfg.get("enable_generation_cache", True)
+        ),
+        "require_logits_to_keep": bool(rollout_cfg.get("require_logits_to_keep", True)),
+    }
+    if not rollout_settings["enable_generation_cache"]:
+        raise ValueError("Memory-efficient PPO requires rollout generation KV caching.")
+    if not rollout_settings["require_logits_to_keep"]:
+        raise ValueError(
+            "The guarded Qwen PPO path requires logits_to_keep so old-policy "
+            "log-probability recomputation cannot materialize prompt logits."
+        )
     save_config(cfg, output_dir / "config_resolved.yaml")
     initialize_experiment(
         output_dir,
@@ -1027,6 +1390,15 @@ def run_trl_ppo(cfg, *, config_path=None):
     policy = load_causal_model(
         str(cfg["model"]["policy_model_path"]), tokenizer, cfg["model"]
     )
+    if (
+        rollout_settings["require_logits_to_keep"]
+        and "logits_to_keep" not in inspect.signature(policy.forward).parameters
+    ):
+        raise RuntimeError(
+            f"{type(policy).__name__}.forward does not expose logits_to_keep; "
+            "refusing the long-response PPO run because compact old-policy "
+            "log-probability recomputation would not be memory bounded."
+        )
     sampling_distribution = configure_ppo_sampling_distribution(
         policy,
         temperature=float(cfg["ppo"].get("temperature", 0.7)),
@@ -1036,10 +1408,18 @@ def run_trl_ppo(cfg, *, config_path=None):
     reference_path = str(
         cfg["model"].get("reference_model_path", cfg["model"]["policy_model_path"])
     )
-    if (
-        Path(reference_path).resolve()
-        == Path(str(cfg["model"]["policy_model_path"])).resolve()
-    ):
+    policy_path = str(cfg["model"]["policy_model_path"])
+    same_reference_source = (
+        reference_path == policy_path
+        or Path(reference_path).resolve() == Path(policy_path).resolve()
+    )
+    share_reference_backbone = bool(rollout_cfg.get("share_reference_backbone", True))
+    if share_reference_backbone and not same_reference_source:
+        raise ValueError(
+            "rollout_optimization.share_reference_backbone=true requires "
+            "model.reference_model_path to match model.policy_model_path."
+        )
+    if share_reference_backbone:
         reference = None
     else:
         reference = load_causal_model(reference_path, tokenizer, cfg["model"])
@@ -1102,6 +1482,9 @@ def run_trl_ppo(cfg, *, config_path=None):
         raise ValueError("Guarded PPO requires tokenizer.eos_token_id.")
 
     _patch_trl_generate_for_fixed_length(ppo_trainer_module)
+    rollout_profile_state = _patch_trl_memory_efficient_rollout(
+        ppo_trainer_module, rollout_settings
+    )
     _patch_trl_reward_guardrails(ppo_trainer_module)
     guardrails = _derive_reward_guardrails(
         cfg,
@@ -1113,6 +1496,30 @@ def run_trl_ppo(cfg, *, config_path=None):
     batch_size = int(train_cfg.get("per_device_train_batch_size", 2)) * int(
         train_cfg.get("gradient_accumulation_steps", 32)
     )
+    response_length = int(ppo_cfg.get("response_length", 768))
+    vocabulary_size = len(tokenizer)
+    dense_float32_elements = batch_size * response_length * vocabulary_size
+    rollout_report = {
+        "schema_version": 1,
+        **rollout_settings,
+        "share_reference_backbone": share_reference_backbone,
+        "reference_mode": (
+            "policy adapter disabled"
+            if share_reference_backbone
+            else "separate frozen reference model"
+        ),
+        "rollout_batch_size": batch_size,
+        "response_length": response_length,
+        "tokenizer_vocabulary_size": vocabulary_size,
+        "stock_dense_logit_elements": dense_float32_elements,
+        "stock_dense_float32_logit_gib": dense_float32_elements * 4 / 2**30,
+        "compact_selected_logprob_elements": batch_size * response_length,
+        "generation_output_scores": False,
+        "old_policy_logprobs": (
+            "recomputed in chunks from response-position logits only"
+        ),
+    }
+    write_json(rollout_report, output_dir / "ppo_rollout_optimization.json")
     total_episodes = int(ppo_cfg.get("total_episodes", 12000))
     planned_updates = math.ceil(total_episodes / batch_size)
     domains = tuple(balance_cfg.get("domains", DEFAULT_DOMAINS))
@@ -1246,6 +1653,7 @@ def run_trl_ppo(cfg, *, config_path=None):
         "planned_episodes": planned_updates * batch_size,
         "configured_total_episodes": total_episodes,
         "rollout_batch_size": batch_size,
+        "rollout_optimization_sha256": _json_sha256(rollout_report),
     }
     if resume_checkpoint:
         _validate_resume_checkpoint(
@@ -1297,7 +1705,12 @@ def run_trl_ppo(cfg, *, config_path=None):
     args.num_total_batches = segment_updates
     if resume_checkpoint:
         start_state = _restore_exact_trainer_state(trainer, resume_checkpoint)
-    _install_diagnostics_logging(trainer, collector, output_dir)
+    _install_diagnostics_logging(
+        trainer,
+        collector,
+        output_dir,
+        rollout_profile_state=rollout_profile_state,
+    )
 
     segment_report = {
         "schema_version": 1,
@@ -1310,6 +1723,7 @@ def run_trl_ppo(cfg, *, config_path=None):
         "resume_checkpoint": str(resume_checkpoint) if resume_checkpoint else None,
         "rollout_plan_sha256": plan_report["plan_sha256"],
         "reward_guardrails_sha256": _json_sha256(guardrails),
+        "rollout_optimization_sha256": _json_sha256(rollout_report),
     }
     write_json(segment_report, output_dir / "ppo_segment_plan.json")
     print(json.dumps(segment_report, indent=2))
@@ -1376,6 +1790,7 @@ def run_trl_ppo(cfg, *, config_path=None):
         "reward_guardrails": guardrails,
         "eos_trick": eos_trick,
         "rollout_plan": plan_report,
+        "rollout_optimization": rollout_report,
         "sampling_distribution": sampling_distribution,
         "checkpoint_health": health,
         "last_metrics": log_history[-1] if log_history else {},

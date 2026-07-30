@@ -22,7 +22,7 @@ trl = [
   "torch",
   "torchvision",
   "torchaudio",
-  "torchao",
+  "torchao>=0.17.0",
   "trl[peft]",
   "transformers",
   "datasets",

@@ -128,9 +128,10 @@ def _check_data(cfg, stage, errors):
             )
 
 
-def _check_ppo_configuration(cfg, errors):
+def _check_ppo_configuration(cfg, errors, tokenizer=None):
     ppo = cfg.ppo
     train = cfg.train
+    rollout = cfg.get("rollout_optimization", {})
     guardrails = cfg.get("reward_guardrails", {})
     balance = cfg.get("rollout_balance", {})
     batch_size = int(train.get("per_device_train_batch_size", 1)) * int(
@@ -144,6 +145,17 @@ def _check_ppo_configuration(cfg, errors):
         f"batch={batch_size}, configured episodes={int(ppo.total_episodes)}, "
         f"planned updates={planned_updates}, target update={target_update}"
     )
+    if tokenizer is not None:
+        dense_gib = (
+            batch_size
+            * int(ppo.get("response_length", 768))
+            * len(tokenizer)
+            * 4
+            / 2**30
+        )
+        print(
+            f"Stock TRL batch-wide rollout logits avoided: {dense_gib:.2f} GiB float32"
+        )
 
     if bool(ppo.get("whiten_rewards", False)):
         errors.append(
@@ -158,6 +170,52 @@ def _check_ppo_configuration(cfg, errors):
         errors.append("reward_guardrails.enabled must be true")
     if not bool(balance.get("enabled", False)):
         errors.append("rollout_balance.enabled must be true")
+    if not bool(rollout.get("enabled", False)):
+        errors.append("rollout_optimization.enabled must be true")
+    if not bool(rollout.get("share_reference_backbone", False)):
+        errors.append(
+            "guarded LoRA PPO requires rollout_optimization."
+            "share_reference_backbone=true"
+        )
+    if not bool(rollout.get("enable_generation_cache", False)):
+        errors.append("rollout_optimization.enable_generation_cache must be true")
+    if not bool(rollout.get("require_logits_to_keep", False)):
+        errors.append("rollout_optimization.require_logits_to_keep must be true")
+    policy_source = str(cfg.model.policy_model_path)
+    reference_source = str(
+        cfg.model.get("reference_model_path", cfg.model.policy_model_path)
+    )
+    if (
+        bool(rollout.get("share_reference_backbone", False))
+        and policy_source != reference_source
+        and Path(policy_source).resolve() != Path(reference_source).resolve()
+    ):
+        errors.append(
+            "shared PEFT reference requires model.reference_model_path to match "
+            "model.policy_model_path"
+        )
+    for key in (
+        "generation_batch_size_candidates",
+        "logprob_batch_size_candidates",
+    ):
+        values = rollout.get(key)
+        if not isinstance(values, (list, tuple)) or not values:
+            errors.append(f"rollout_optimization.{key} must be a non-empty list")
+        else:
+            try:
+                parsed = [int(value) for value in values]
+            except (TypeError, ValueError):
+                errors.append(
+                    f"rollout_optimization.{key} values must be positive integers"
+                )
+                continue
+            if any(value <= 0 for value in parsed):
+                errors.append(f"rollout_optimization.{key} values must be positive")
+            else:
+                print(
+                    f"PPO {key.replace('_', ' ')}: "
+                    + " -> ".join(str(value) for value in parsed)
+                )
     if not domains or batch_size % len(domains):
         errors.append(
             f"PPO rollout batch {batch_size} must be divisible by the "
@@ -270,8 +328,10 @@ def _check_tokenizer(cfg, stage, errors):
                 "Warning: Qwen chat models usually use '<|im_end|>' as EOS; "
                 "verify this tokenizer before the full run."
             )
+        return tokenizer
     except Exception as exc:
         errors.append(f"tokenizer check failed: {type(exc).__name__}: {exc}")
+        return None
 
 
 def main():
@@ -295,10 +355,10 @@ def main():
     _check_imports(errors)
     _check_trl_apis(errors)
     _check_cuda(errors, require_cuda=not args.allow_cpu)
-    _check_tokenizer(cfg, args.stage, errors)
+    tokenizer = _check_tokenizer(cfg, args.stage, errors)
     _check_data(cfg, args.stage, errors)
     if args.stage == "ppo":
-        _check_ppo_configuration(cfg, errors)
+        _check_ppo_configuration(cfg, errors, tokenizer=tokenizer)
     _check_directory(Path(str(cfg.train.output_dir)), "local output", errors)
     for key, label in (
         ("checkpoint_sync_dir", "checkpoint sync"),

@@ -54,6 +54,14 @@ ppo:
   whiten_rewards: false
   num_sample_generations: 0
 
+rollout_optimization:
+  enabled: true
+  share_reference_backbone: true
+  enable_generation_cache: true
+  require_logits_to_keep: true
+  generation_batch_size_candidates: [8, 4, 2]
+  logprob_batch_size_candidates: [4, 2, 1]
+
 reward_guardrails:
   enabled: true
   calibration_split: train

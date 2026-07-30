@@ -191,6 +191,16 @@ Checkpoint gates use 256 balanced prompts, with full 2,017-prompt evaluations at
 updates 100, 150, and 188; checkpoint selection is multi-metric and is not
 automatically assigned to the last update.
 
+The guarded collector is sized for an A100 40GB. Stock experimental TRL padded
+the full `64 x 768 x vocabulary` rollout-score tensor, producing a 27.82 GiB
+allocation before any optimizer update. The active path instead generates token
+IDs with a rollout-only KV cache, requests no generation scores, and recomputes
+only sampled-token behavior log-probabilities from Qwen response-position
+logits. Generation probes chunks 8, 4, and 2 with deterministic OOM fallback;
+log-probability recomputation probes 4, 2, and 1. A real update-1 notebook gate
+records selected chunks, throughput, and peak VRAM before the longer segments.
+The effective batch, rewards, PPO epochs, and domain balance are unchanged.
+
 ### DPO Extension
 
 The DPO experiment changes only the preference-optimization method. It reuses

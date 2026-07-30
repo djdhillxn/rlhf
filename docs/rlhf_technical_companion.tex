@@ -535,9 +535,12 @@ Use a frozen SFT reference &
 PPO adapter weights are disabled for reference log probabilities.\\
 Fixed-length EOS trick &
 Rollouts sample the configured length without stopping at EOS, are truncated
-at EOS afterward, and receive reward $-1$ if no EOS appears.\\
+at EOS afterward. The evaluated historical run used reward $-1$ when EOS was
+missing; the guarded follow-up instead replaces the score with the calibrated
+0.5th-percentile lower reward boundary.\\
 Whiten rewards/advantages &
-Reward whitening is enabled and TRL whitens masked advantages.\\
+The guarded follow-up disables optional reward whitening so calibrated terminal
+penalties retain their scale; \trl{} continues to whiten masked advantages.\\
 Adam numerical setting &
 Adam epsilon is $10^{-5}$.\\
 \bottomrule
@@ -558,10 +561,13 @@ write paths.
 The Colab workflow keeps active datasets and checkpoints on local SSD for
 throughput and synchronizes periodic checkpoints and final artifacts to Google
 Drive. SFT and reward training support exact Transformers checkpoint resume.
-The experimental \trl{} PPO wrapper intentionally does not claim exact resume
-because the trainer does not expose a reliable optimizer/dataloader resume
-path in the used API. PPO continuation must instead be recorded as a new
-segment with explicit parent checkpoints.
+The guarded PPO wrapper adds an explicit exact-resume layer around the
+experimental \trl{} trainer. Every verified checkpoint contains the LoRA policy,
+complete value model, optimizer, scheduler, Trainer state, Python/NumPy/CPU/CUDA
+RNG state, deterministic rollout-plan position, calibrated guardrails, and a
+health marker written only after all required files exist. Training is divided
+into cumulative target updates and resumes from the latest verified checkpoint;
+an incomplete newer directory is ignored.
 
 Evaluation is resumable at the policy-output level. Each policy writes
 complete JSONL records as generation proceeds; ``partial'' denotes
@@ -662,7 +668,7 @@ episodes and 100 updates.
 
 \begin{table}[H]
 \centering
-\caption{Final PPO settings and observed training statistics.}
+\caption{Evaluated PPO settings and observed training statistics.}
 \label{tab:ppo}
 \begin{tabularx}{0.9\textwidth}{@{}Y r@{}}
 \toprule
@@ -707,6 +713,55 @@ value loss fell from 25.32 on the first update to 5.50 on update 100, and no
 empty-response collapse appeared. Stability, however, does not rule out
 reward-model exploitation, which is why evaluation and auditing determine the
 final interpretation.
+
+\subsection{Guarded 188-update follow-up and A100 memory redesign}
+
+The evaluated run above motivated a more conservative follow-up rather than an
+unqualified extension of its final checkpoint. The active guarded configuration
+retains the 768-token response budget, rollout batch 64, four PPO epochs,
+learning rate $3\times10^{-6}$, and policy/value clipping. It raises the
+reference KL coefficient from 0.07 to 0.10, draws exactly 16 prompts from each
+of code, general, STEM, and multilingual per update, clips terminal reward at
+the 0.5th and 99.5th percentiles of a stratified reward-training sample,
+replaces missing-EOS scores with the lower boundary, and applies a smooth
+repeated-4-gram penalty above the preferred-response 95th percentile. Reward
+whitening is disabled while advantage whitening remains active. The planned
+12,000 episodes correspond to 188 updates; checkpoints are selected through
+stratified and full-suite evaluation rather than by automatically choosing the
+last update.
+
+The first launch on an A100 40GB exposed a separate systems problem before any
+optimizer update completed. The stock experimental \trl{} rollout path retained
+generation scores for all tokens and then padded them into a dense tensor. For
+Qwen's vocabulary, the attempted allocation was
+\[
+64 \times 768 \times 151{,}936 \times 4\ \mathrm{bytes}
+= 27.82\ \mathrm{GiB}.
+\]
+The process already held 24.84~GiB, so the instantaneous requirement was at
+least 52.61~GiB. Only 0.16~GiB was reserved but unused; this was a live-tensor
+capacity failure, not allocator fragmentation. Lowering the generation forward
+chunk did not help because \trl{} concatenated every chunk afterward.
+
+The optimized collector preserves generated token IDs but requests no
+generation scores. It enables KV caching only for no-gradient autoregressive
+decoding, then recomputes the old-policy probabilities in bounded chunks using
+only the response-position logits exposed by Qwen's
+\texttt{logits\_to\_keep}. The persistent behavior tensor therefore has shape
+$64\times768$, not $64\times768\times151{,}936$. The SFT reference remains the
+same policy backbone with the LoRA adapter disabled, which avoids a duplicate
+reference model. Generation tries chunk sizes 8, 4, and 2; old-policy
+log-probability recomputation tries 4, 2, and 1; downstream reference, value,
+and reward passes retain chunk size 2. An OOM fallback restores the pre-attempt
+RNG state before retrying a smaller chunk, preserving the sampled trajectory.
+
+This is a memory/execution optimization, not a change to PPO rewards, GAE,
+clipping, domain balance, or effective batch size. The notebook first performs
+one real update and saves it as an exact checkpoint. Its diagnostic row records
+generation and log-probability time, selected chunk sizes, tokens per second,
+OOM fallback count, rollout peak allocation, and total-update peak allocation.
+Only this measured profile can establish whether the 188-update run meets the
+one-day cost target on the selected Colab GPU.
 
 \section{Experimental Progression}
 
@@ -1523,10 +1578,11 @@ Active work uses Colab local SSD for model shards, datasets, logs, and Trainer
 state, with periodic checkpoints and final artifacts copied to mounted Drive.
 This is faster and keeps model tensors outside Git. SFT, reward, and DPO
 support exact Trainer resume. DPO's \texttt{auto} mode restores model,
-optimizer, scheduler, RNG, and Trainer state. The experimental PPO API used in
-this project does not expose trustworthy exact resume; a continuation is a
-new segment with an explicit parent, the original SFT reference, and separately
-recorded optimizer history.
+optimizer, scheduler, RNG, and Trainer state. The guarded wrapper supplies the
+missing protocol around experimental PPO: policy/value state, optimizer,
+scheduler, Trainer state, RNG state, rollout position, and guardrail
+fingerprints must all pass a health check before a directory is eligible for
+automatic continuation.
 
 Evaluation is resumable per policy. Its ``partial policy outputs'' are complete
 JSONL rows written incrementally; \emph{partial} describes interrupt-safe run
