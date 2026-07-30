@@ -244,12 +244,12 @@ The stronger reward-model result does not remove the need for inspection. PPO re
 
 The audit found:
 
-- 8 low-repetition PPO candidates that beat both Base and SFT under the reward model;
-- 108 strong PPO losses;
-- 313 high-reward repetition or reward-model mismatch risks;
-- 50 curated portfolio examples, balanced as 25 positive and 25 negative cases.
+- 8 likely genuine PPO wins and 354 modest clean wins under deterministic triage;
+- 64 strong PPO regressions, 288 severe repetition failures, and 151 reward-model false-positive risks;
+- full prompts and responses for all 2,017 validation examples;
+- a 100-example first-pass subset balanced as 50 positive and 50 negative cases.
 
-The curated response explorer data is in [`rlhf_runs/portfolio_curated_policy_comparisons_ckpt100.json`](rlhf_runs/portfolio_curated_policy_comparisons_ckpt100.json). The deep curation report is [`rlhf_runs/ckpt100_deep_curation_report.md`](rlhf_runs/ckpt100_deep_curation_report.md).
+The complete response-explorer artifact is in [`rlhf_runs/portfolio_full_policy_comparisons_final_trl.json`](rlhf_runs/portfolio_full_policy_comparisons_final_trl.json), with the balanced subset recorded in [`rlhf_runs/portfolio_curated_100_manifest_final_trl.json`](rlhf_runs/portfolio_curated_100_manifest_final_trl.json).
 
 ## Interpretation
 
@@ -261,7 +261,7 @@ This run is the first one in the project where PPO edges the base model under th
 - qualitative auditing is part of the result, not an optional afterthought;
 - future improvement should focus on reward-model reliability, hard negatives, stopping behavior, and controlled checkpoint selection.
 
-Older custom-training results are preserved in [`docs/rlhf_experiments.md`](docs/rlhf_experiments.md) and [`experiments/baselines/qwen25_05b_helpsteer3_ppo_long512/`](experiments/baselines/qwen25_05b_helpsteer3_ppo_long512/). Those runs were essential for debugging long context, evaluation caps, checkpoint loading, and repetition diagnostics, but the final result reported here is the TRL run above.
+Older custom-training results are preserved in the technical companion and in the machine-readable records under [`experiments/baselines/qwen25_05b_helpsteer3_ppo_long512/`](experiments/baselines/qwen25_05b_helpsteer3_ppo_long512/). Those runs were essential for debugging long context, evaluation caps, checkpoint loading, and repetition diagnostics, but the final result reported here is the TRL run above.
 
 ## Repository Structure
 
@@ -271,15 +271,14 @@ Older custom-training results are preserved in [`docs/rlhf_experiments.md`](docs
 | `scripts/` | command-line training, evaluation, audit, and comparison entry points |
 | `configs/trl/` | active TRL SFT, reward-model, PPO, DPO, and evaluation configs |
 | `configs/rlhf/` | historical custom-loop configs |
-| `docs/` | experiment history, TRL migration notes, audit notes, and future work |
+| `docs/` | concise project report, complete technical companion, and retained Colab training record |
 | `experiments/baselines/` | frozen pre-TRL baseline records |
 | `rlhf_runs/` | local final-run summaries, curation notebooks, and portfolio export artifacts |
 | `rlhf_runs_lightweight_export/` | lightweight copy of Colab logs/configs without model weights |
 
 ## Recommended Reading Order
 
-1. [`docs/latex/rlhf_project_report.pdf`](docs/latex/rlhf_project_report.pdf): concise two-column academic report.
-2. [`docs/latex/rlhf_technical_companion.pdf`](docs/latex/rlhf_technical_companion.pdf): engineering detail, experiment history, artifact map, and DPO execution record.
-3. [`docs/trl_migration.md`](docs/trl_migration.md): active TRL design and implementation-detail coverage.
-4. [`docs/rlhf_experiments.md`](docs/rlhf_experiments.md): chronological experiment log.
-5. [`docs/rlhf_qualitative_audit.md`](docs/rlhf_qualitative_audit.md): repetition and reward-model mismatch audit.
+1. [`docs/rlhf_project_report.pdf`](docs/rlhf_project_report.pdf): concise two-column academic account of the method, final results, interpretation, and controlled DPO extension.
+2. [`docs/rlhf_technical_companion.pdf`](docs/rlhf_technical_companion.pdf): trainer design and implementation details, chronological experiment log, Colab and checkpoint operations, qualitative and reward-mismatch audit, artifact map, DPO execution record, and future-work agenda.
+
+The root README is the repository's only maintained Markdown documentation. Detailed prose lives in the two LaTeX report sources so that experimental history and current conclusions cannot drift across parallel documents.

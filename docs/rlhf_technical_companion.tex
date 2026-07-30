@@ -20,7 +20,7 @@
 \usepackage{hyperref}
 \usepackage{fancyhdr}
 
-\graphicspath{{../../rlhf_runs/checkpoints_ckpt100_full/plots/}}
+\graphicspath{{../rlhf_runs/checkpoints_ckpt100_full/plots/}}
 \urlstyle{same}
 \hypersetup{
   colorlinks=true,
@@ -1064,76 +1064,200 @@ define the boundary of the result.
 
 \section{Future Work}
 
-The next phase should improve evidence before simply increasing PPO compute.
+The next phase should improve the evidence and evaluator before simply
+increasing PPO compute. The agenda below preserves the complete research plan
+that emerged from the custom and TRL experiments.
 
-\subsection{Calibrate evaluation with human preference}
+\subsection{Establish a controlled evaluation protocol}
 
-The highest-value next experiment is blinded review of a stratified sample
-across domain, reward margin, response length, repetition risk, and curated
-polarity. Reviewers should compare responses without policy names or reward
-scores and rate correctness, relevance, completeness, clarity, harmlessness,
-and unnecessary verbosity. Inter-rater agreement would reveal whether the
-reward model is wrong or the examples are genuinely ambiguous.
+Future comparisons should make one intervention attributable at a time. The
+historical 512- and 1,024-token suites changed batch size as well as response
+budget, and most generations changed even when the shorter response had not
+reached its cap. A controlled token-budget study should hold the checkpoint,
+software environment, precision, batch size, prompt order, decoding settings,
+seed, and evaluator implementation fixed while testing 256, 512, 768, and
+1,024 new tokens. It should also record whether a longer response is an exact
+continuation of its shorter counterpart.
 
-Token-budget evaluations at 512, 768, and 1,024 new tokens should hold
-checkpoint, precision, batch size, prompt order, seed, decoding, and software
-fixed. Paired bootstrap intervals and repeated sampled generations would
-separate policy effects from decoding variance.
+Greedy decoding supplies a reproducible trajectory but not a distributional
+evaluation. Repeated sampled generations with fixed seeds should measure both
+mean quality and response variance. Because every policy answers the same
+prompts, overall and domain-level confidence intervals should use paired
+bootstrap resampling.
 
-\subsection{Retrain the reward model on its observed failures}
+Blinded human review should become a first-class signal. Prompts should be
+stratified by domain, learned-reward margin, response length, repetition risk,
+and curated polarity. Reviewers should not see policy names or reward scores
+and should separately rate correctness, relevance, completeness, clarity,
+harmlessness, and unnecessary verbosity. Inter-rater agreement and
+adjudication rates would distinguish judge error from genuinely ambiguous
+preferences.
 
-The present audit supplies a hard-negative curriculum: repeated loops, prompt
-restatements, irrelevant continuations, malformed code, fabricated citations,
-incorrect STEM procedures, and answers whose useful prefix degrades later.
-These examples are closer to PPO's optimization distribution than random
-rejected responses. They should be added to reward training and held-out
-stress tests.
+Length must be controlled explicitly. Reports should compare reward within
+response-length buckets, win rates among similarly sized answers, and reward
+delta against token delta. This separates substantive improvement from a judge
+that rewards formatting or verbosity.
 
-A stronger evaluator could combine a general preference score with specialized
-signals for repetition, factuality, code execution, safety, and language
-consistency. Reward ensembles or multiple seeds could estimate uncertainty;
-PPO updates could discount examples on which judges disagree. Scaling the
-reward model before the policy may be safer because a larger policy can
-exploit a weak judge more efficiently.
+\subsection{Improve reward-model reliability}
 
-\subsection{Improve SFT data and stopping behavior}
+The final reward model reaches 65.62\% held-out pairwise accuracy, and several
+extreme scores still contradict visible response quality. Its next dataset
+should include hard negatives from the policy distribution: repeated loops,
+prompt restatements, irrelevant continuations, malformed code, fabricated
+citations, incorrect STEM procedures, language drift, and answers whose useful
+prefix degrades later. These examples are more relevant to policy
+optimization than random rejected HelpSteer3 responses and should also form a
+held-out stress test.
 
-SFT should filter duplicates, broken markup, repeated completions, unsupported
-citations, and factual errors rather than treating the preferred label as
-automatic proof of quality. Domain-stratified training and validation would
-reduce domination by general English prompts. Executable code and verified
-STEM examples are especially valuable.
+One scalar preference target should not be assumed to represent every desired
+property. A stronger evaluator could retain a general preference score while
+adding auxiliary heads or separate judges for relevance, factuality,
+repetition, safety, style, code execution, and language consistency.
+Deterministic checks for empty text, missing EOS, repeated $n$-grams, language
+mismatch, or failure to answer a direct question can guard known blind spots,
+although they must not replace learned or human preference.
 
-Stopping should become an explicit quality dimension. Useful metrics include
-EOS rate, cap-hit rate, late-response repetition, and reward change between a
-full response and its prefixes. Dynamic response budgets can reserve long
-generations for tasks that need them while avoiding 1,024-token continuations
-for simple extraction or classification prompts.
+Reward uncertainty should be measured. Ensembles trained from different seeds
+or splits can identify unstable decisions; policy rewards can be discounted
+where judges disagree, and evaluation can separate high- and low-confidence
+comparisons. Calibration should test whether larger reward margins actually
+correspond to more reliable preferences. Domain rebalancing is particularly
+important because STEM accuracy is materially lower than code and multilingual
+accuracy. Native-speaker review is also needed for multilingual cases.
 
-\subsection{Run conservative and comparative policy optimization}
+Long-response examples deserve an explicit curriculum. Batches should balance
+short, medium, and long answers and include pairs whose openings are similar
+but whose later continuations differ sharply in quality. This teaches the
+judge that a strong prefix does not excuse a repetitive or incorrect ending.
+Scaling the reward model before the policy may be safer: a larger policy can
+exploit a weak judge more effectively.
 
-A future PPO run should use multi-metric checkpoint selection: reward-model
-win rate, KL, EOS rate, cap-hit rate, repetition, length, domain correctness,
-and blinded human preference. A length curriculum from 256 or 512 tokens to
-768 and 1,024 may be safer than beginning with the longest horizon. Segment-
-or process-level rewards could distinguish a useful prefix from a degraded
-suffix.
+\subsection{Strengthen supervised fine-tuning}
 
-PPO should also be compared with preference objectives that avoid online
-reward-model optimization, especially Direct Preference Optimization (DPO)
-\cite{rafailov2023}, using the same SFT checkpoint and preference data.
-RLOO/GRPO-style group-relative baselines are relevant when several responses
-can be sampled for the same prompt. Such comparisons would help isolate
-whether the bottleneck is the reward model, the value function, online RL, or
-the underlying data.
+SFT determines both policy initialization and the frozen reference. Future
+data should therefore be filtered for factuality, coherent stopping, and
+relevance rather than treating the preferred label as automatic proof of
+quality. Duplicate or near-duplicate responses, broken markup, unsupported
+citations, and repeated text should be removed or repaired. A smaller clean
+set may be preferable to a larger noisy one.
 
-\subsection{Scale only after the evaluator improves}
+Data composition should match intended use. Domain-stratified sampling and
+loss monitoring would prevent general English prompts from dominating. Code
+examples should be executable and unit tested; STEM examples should contain
+verified derivations and grounded citations; multilingual examples should be
+natural rather than translation-only. A sequence-length curriculum could
+teach instruction following and stopping on shorter high-quality responses
+before introducing long-context examples. Any packing strategy must preserve
+response-only masks and avoid confusing mixtures of unrelated conversations.
 
-Repeating the pipeline at 1.5B or 3B scale would test whether stronger base
-capabilities turn the same preference signal into more reliable gains. The
-data and evaluation should remain fixed across scales. Systems work would then
-include sharding, activation checkpointing, efficient attention, packed
-sequences, quantized frozen models, and asynchronous rollout generation.
+SFT checkpoint selection should compare epochs instead of assuming the final
+checkpoint is best. Preferred-response perplexity is insufficient; selection
+should include response-level preference, repetition, stopping, factuality,
+and downstream alignment behavior.
+
+\subsection{Redesign PPO around observed failures}
+
+A direct 1,024-token PPO run is useful only as a controlled experiment. It
+should start from the same SFT checkpoint and compare 512-, 768-, and
+1,024-token policies at matched update-token budgets. A curriculum from 256 or
+512 tokens to longer horizons may be more stable than beginning with the
+largest allowance. Missing-EOS rewards, length-aware terminal rewards, and
+repetition penalties should be introduced gradually and monitored for
+short-answer collapse.
+
+The reward should distinguish a useful prefix from a degraded suffix. A single
+terminal score gives every response token the same sequence-level outcome.
+Process or segment rewards, or at least scoring the full answer and several
+prefixes, can reveal when continuing became harmful. Late-token KL diagnostics
+and an adaptive target-KL controller could likewise show whether repetition
+begins after the policy departs from its reference late in the answer.
+
+Prompt difficulty affects raw reward, so normalization across unrelated
+prompts can obscure the signal. Several candidates per prompt with
+within-prompt centering provide a cleaner comparison; RLOO- or GRPO-style
+baselines are relevant here. Checkpoint selection must use learned reward, KL,
+EOS rate, empty rate, cap-hit rate, repetition, length, human preference, and
+domain correctness together. Training should stop when reward improves while
+these safety or quality measures deteriorate.
+
+\subsection{Compare alternative preference objectives}
+
+PPO remains valuable because it connects the work to trust-region policy
+optimization, but it should not be the only alignment baseline. The controlled
+DPO extension uses the same SFT checkpoint and preference pairs while avoiding
+online rollouts, a learned reward function in the update loop, and a value
+model. IPO, KTO, ORPO, and related objectives provide additional robustness
+and data-requirement comparisons. Together they can help isolate whether the
+bottleneck is reward modeling, value estimation, online RL, model capacity, or
+the preference data.
+
+Offline methods cannot automatically learn from new policy-specific failures.
+A later online loop could alternate generation, human or high-quality judge
+labeling, reward-model updates, and policy updates, turning the static dataset
+into active learning around the policy's observed errors.
+
+\subsection{Improve decoding and stopping}
+
+Inference settings are part of policy behavior. The final suite uses sampled
+decoding at temperature 0.7 with no repetition penalty or no-repeat constraint.
+Deployment-oriented evaluation should compare greedy decoding, temperature and
+top-$p$ sweeps, modest repetition penalties, no-repeat constraints, and
+task-aware stopping. These controls can suppress visible degeneration but may
+also damage legitimate repetition in code or structured prose.
+
+Dynamic token budgets are preferable to one universal cap. Classification,
+extraction, and title prompts need little space, while code explanations and
+long-form synthesis may need much more. A task classifier or length predictor
+can allocate budgets while reports measure both quality and compute. Stopping
+quality itself should be measured through EOS rate, cap-hit rate, late-response
+repetition, and reward changes between full answers and shorter prefixes.
+
+\subsection{Add factuality, execution, and safety evaluators}
+
+Correctness-sensitive tasks admit stronger checks than a generic preference
+score. Code can be parsed, linted, and executed in isolated tests; SQL can run
+against temporary schemas; shell snippets can receive static analysis. STEM
+evaluation should check equations, units, factual claims, and citation
+existence, using retrieval or specialist review where appropriate. Abstention
+or calibrated uncertainty should be preferable to unsupported confidence.
+
+Safety should use structured suites for self-harm, medical advice, harassment,
+sexual content, privacy, and dangerous procedural assistance. False refusals
+must be measured alongside unsafe compliance because refusing benign prompts
+is also an alignment failure.
+
+\subsection{Scale model and systems capacity deliberately}
+
+Repeating the controlled pipeline at 1.5B or 3B scale would test whether
+stronger base capability turns the same preference signal into more reliable
+gains. Data and evaluation must remain fixed across scales. Larger runs would
+need sharding, activation checkpointing, efficient attention, packed
+sequences, quantized frozen reference/reward models, inference-oriented
+rollout engines, and potentially asynchronous generation.
+
+Policy scale and reward-model scale should be separate experimental axes.
+Improving the judge may benefit training and evaluation simultaneously,
+whereas scaling only the policy may amplify exploitation.
+
+\subsection{Reproducibility and artifact governance}
+
+Every evaluation should retain its resolved configuration, package versions,
+source revision, checkpoint hashes, prompt-order hash, generation signature,
+and environment. Resume fingerprints should prevent stale cached responses
+from being reused under changed settings. Reports should be generated from
+lightweight commands, raw response tables should remain immutable, and new
+runs should use versioned directories rather than overwrite evidence.
+
+\subsection{Practical next sequence}
+
+The highest-value next step is a blinded human review of a stratified subset,
+paired with a controlled 512/768/1,024-token evaluation under identical
+conditions. The second step is retraining and stress-testing the reward model
+on hard negatives from the audit. The third is a comparison among conservative
+PPO, length-curriculum PPO, and the DPO baseline, with checkpoint selection
+based on human preference and the full diagnostic set rather than reward
+alone. This sequence targets observed bottlenecks and is more informative than
+merely extending the current PPO run.
 
 \section{Conclusion}
 
@@ -1156,6 +1280,300 @@ controlling stopping, and validating preferences independently.
 
 \appendix
 
+\section{Detailed Historical Experiment Ledger}
+
+This appendix retains the operational facts behind the compact progression in
+Table~\ref{tab:history}. Historical paths and configurations are evidence of
+what was run; they are not active recommendations.
+
+\subsection{Initial validation and sequence-length diagnosis}
+
+Early 96- and 128-token generations accelerated debugging but often stopped
+inside code blocks or explanations. These runs exposed multilingual or
+gibberish drift, vulgar debug-pattern text, EOS and blank-response collapse,
+overaggressive reward shaping, and invalid comparisons caused by incorrect
+checkpoint paths. The resulting safeguards included prompt sanitation, KL
+anchoring, empty-response checks, repeated-text diagnostics, and explicit
+checkpoint validation.
+
+The sequence-length diagnostic established why the project moved from 1,024
+to 4,096 total tokens:
+
+\begin{table}[H]
+\centering
+\caption{Fraction of records requiring truncation at each total-token limit.}
+\label{tab:length-ledger}
+\begin{tabular}{@{}rrrrr@{}}
+\toprule
+\textbf{Limit} & \textbf{Train SFT} & \textbf{Train RM} &
+\textbf{Valid. SFT} & \textbf{Valid. RM}\\
+\midrule
+1,024 & 38.47\% & 40.82\% & 36.78\% & 39.49\%\\
+2,048 & 15.48\% & 16.47\% & 13.51\% & 14.87\%\\
+3,072 & 5.28\% & 5.83\% & 4.69\% & 5.32\%\\
+4,096 & 0.83\% & 1.00\% & 0.68\% & 0.89\%\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Frozen custom SFT, reward, and PPO baseline}
+
+The pre-TRL lineage is frozen at commit
+\texttt{6cbf214fcf1b91c7b756e303e533c2c86d2eba89}. Custom SFT used
+\model{}, 4,096 total tokens, two epochs, batch size 6, accumulation 3,
+learning rate $5\times10^{-6}$, and LoRA rank 16. It completed 4,030 optimizer
+steps and wrote to
+\path{outputs/rlhf/qwen25_05b_helpsteer3_sft_4096/}.
+
+The two-epoch custom reward model wrote to
+\path{outputs/rlhf/qwen25_05b_helpsteer3_reward_4096_epoch2/} and produced the
+following held-out audit:
+
+\begin{table}[H]
+\centering
+\caption{Historical custom reward-model result.}
+\begin{tabular}{@{}lr@{}}
+\toprule
+\textbf{Metric} & \textbf{Value}\\
+\midrule
+Validation pairs & 1,917\\
+Accuracy / loss & 71.62\% / 0.9734\\
+Mean chosen--rejected margin & 0.9094\\
+Code / General accuracy & 74.88\% / 71.01\%\\
+STEM / Multilingual accuracy & 63.37\% / 75.15\%\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The custom long-512 PPO run used a 3,072-token prompt budget, 512-token
+rollouts, learning rate $3\times10^{-7}$, policy clip 0.06, one PPO epoch,
+rollout batch 2, and an adaptive KL coefficient initialized at 0.18 with a
+0.14 minimum. It completed 397 of 400 requested updates and ended at KL
+coefficient 0.14. Rewards were clipped to $[-5,5]$; scalar reward whitening
+was absent; length penalty was 0.002; missing-EOS penalty was zero; responses
+shorter than 32 tokens received a 0.5 penalty; group-relative normalization
+was disabled. Generation applied repetition penalty 1.05 and blocked repeated
+4-grams. Prompt batches were left padded, and response masks excluded padding
+from PPO losses. Its output is
+\path{outputs/rlhf/qwen25_05b_helpsteer3_ppo_4096_epoch2_long512/}.
+
+\subsection{Historical policy-suite results}
+
+The 512-token suite used all 2,017 validation prompts. Three-way wins were
+Base 827 (41.00\%), SFT 556 (27.57\%), PPO 525 (26.03\%), and 109 ties
+(5.40\%). Mean rewards were $-3.5339$, $-3.4280$, and $-3.6666$; median
+response lengths were 332, 363, and 356 tokens; and cap-hit rates were
+29.90\%, 29.95\%, and 29.70\%. Its complete pairwise table is retained below.
+
+\begin{table}[H]
+\centering
+\caption{Historical custom 512-token pairwise evaluation.}
+\begin{tabular}{@{}lrrrrr@{}}
+\toprule
+\textbf{Comparison} & \textbf{Left} & \textbf{Right} & \textbf{Ties} &
+\textbf{Right rate} & \textbf{Mean $\Delta$}\\
+\midrule
+Base vs SFT & 1,044 & 927 & 46 & 45.96\% & $+0.1059$\\
+Base vs PPO & 1,068 & 904 & 45 & 44.82\% & $-0.1327$\\
+SFT vs PPO & 965 & 898 & 154 & 44.52\% & $-0.2386$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The later 1,024-token suite produced three-way wins of Base 978 (48.49\%),
+SFT 475 (23.55\%), PPO 467 (23.15\%), and 97 ties (4.81\%). Mean rewards were
+$-3.3634$, $-3.6114$, and $-3.5771$; median lengths were 334, 360, and 363;
+cap-hit rates were 8.08\%, 10.16\%, and 11.60\%; empty rates were zero.
+
+\begin{table}[H]
+\centering
+\caption{Historical custom 1,024-token pairwise evaluation.}
+\begin{tabular}{@{}lrrrrr@{}}
+\toprule
+\textbf{Comparison} & \textbf{Left} & \textbf{Right} & \textbf{Ties} &
+\textbf{Right rate} & \textbf{Mean $\Delta$}\\
+\midrule
+Base vs SFT & 1,215 & 763 & 39 & 37.83\% & $-0.2480$\\
+Base vs PPO & 1,190 & 785 & 42 & 38.92\% & $-0.2137$\\
+SFT vs PPO & 963 & 892 & 162 & 44.22\% & $+0.0343$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+PPO's 785 Base wins had mean margin $+1.6210$, while its 1,190 losses had
+mean margin $-1.4315$. Against SFT, its 892 wins averaged $+1.3503$ and its
+963 losses $-1.1789$. Domain PPO win rates against Base were 26.26\% for code
+(115/438), 44.47\% for general (414 wins, 487 losses, 30 ties), 39.59\% for
+STEM (97/245 with two ties), and 39.45\% for multilingual (159 wins, 236
+losses, eight ties).
+
+Increasing the evaluation cap reduced Base/SFT/PPO cap hits from 603/604/599
+to 163/205/234. It also exposed more PPO repetition: 224 responses exceeded
+25\% repeated 4-grams in the 512-token suite versus 325 (16.11\%) in the
+1,024-token suite; severe cases above 50\% rose from 74 to 156. Manual review
+found fabricated citations, incorrect chemistry, irrelevant continuations,
+and high-reward loops. This was not a clean token-cap ablation: batch size
+changed from 8 to 128, and bfloat16 batching, environment, or evaluator
+revisions could change close greedy continuations.
+
+\subsection{Historical A100 40GB profile}
+
+An earlier speed-oriented Colab profile used full bfloat16 weights rather than
+4-bit loading. Reward training used batch 8, accumulation 2 (effective 16),
+all filtered HelpSteer3 pairs, and refreshed token throughput, CUDA memory,
+CSV files, and plots every configured artifact interval. Batch 12 was the
+suggested increase below roughly 28--30GB peak memory; batch 6 was the fallback
+near 36GB or after OOM.
+
+Historical PPO used full bfloat16 policy/reference/reward models, rollout batch
+16, minibatch 4, prompt length 768, response length 160, checkpoints every 50
+updates, and metric refresh every 25 updates. Rollout batch 24 was the first
+recommended utilization increase below 30--32GB; minibatch 6 or 8 was reserved
+for runs with measured headroom. The early evaluator covered 200 prompts;
+the completed suite superseded it with all 2,017.
+
+\section{Experiment Tracking and Run Governance}
+
+The project uses a filesystem contract rather than a tracking server. Every
+new run directory contains the following where applicable:
+
+\begin{table}[H]
+\centering
+\caption{Run-tracking contract.}
+\begin{tabularx}{0.94\textwidth}{@{}p{0.31\textwidth}Y@{}}
+\toprule
+\textbf{Artifact} & \textbf{Purpose}\\
+\midrule
+\texttt{config\_resolved.yaml} & Exact configuration consumed by the run.\\
+\texttt{experiment\_manifest.json} & Identity, intent, config hash, command,
+source state, environment, attempts, status, and summary.\\
+\texttt{run\_metadata.json} & Backward-compatible hardware/software record.\\
+\texttt{*\_metrics.jsonl} / CSV & Step-level measurements.\\
+Run or evaluation summary & Final aggregate result.\\
+Checkpoints, samples, plots & Stage-specific evidence.\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+An interrupted process leaves its manifest in \texttt{running} state.
+Reusing the directory appends an attempt and records whether the resolved
+configuration changed; successful completion updates status and summary.
+Configs can declare non-behavioral intent---experiment ID, name, group, tags,
+hypothesis, and parent runs---while algorithmic choices remain in functional
+sections such as generation, reward shaping, KL, and PPO.
+
+Runs are compared with
+\texttt{python -m scripts.rlhf\_compare\_runs RUN\_A RUN\_B}; metadata-only
+fields are hidden by default. The command supports \texttt{--include-metadata},
+\texttt{--format json}, and \texttt{--output comparison.md}. The
+frozen custom baseline remains under
+\path{experiments/baselines/qwen25_05b_helpsteer3_ppo_long512/}; its YAML
+record is authoritative after removal of its redundant prose README.
+
+The final lightweight records live under
+\path{rlhf_runs_lightweight_export/qwen25_05b_helpsteer3_trl_a100_full/full/}.
+Stage sources of truth are SFT \texttt{run\_summary.json}, reward epoch-1 and
+epoch-2 summaries/audits, PPO checkpoint-100 \texttt{trainer\_state.json}, the
+full policy-suite summary and sample table, and the deep-curation artifacts.
+The PPO directory name retains an obsolete \texttt{r512} token; the executed
+notebook override of 768 tokens takes precedence.
+
+\section{Operational TRL, Colab, and Evaluation Contract}
+
+The stage datasets share one filtered source but have distinct contracts: SFT
+stores token IDs and a completion mask; reward modeling stores paired chosen
+and rejected token IDs with a common prefix; PPO stores deduplicated
+left-padded prompts; DPO stores explicit prompt/chosen/rejected text plus
+preference-strength and annotator metadata. Prompt history is shortened before
+any final prompt-side truncation, responses retain EOS, and PAD is distinct
+from EOS.
+
+The preflight doctor validates the exact interpreter, package versions, CUDA,
+trainer APIs, tokenizer special tokens, prepared data, and local/Drive write
+permissions before expensive work. Evaluation always loads the SFT tokenizer;
+Base is resized once for its distinct PAD token. Neutral generation controls
+are explicit so checkpoint defaults cannot create asymmetric decoding. Policy
+list overrides accept either dotted or bracketed indices. The policy labeled
+Base must keep a null checkpoint and load the configured model name; pointing
+it at SFT would silently make the Base and SFT columns identical.
+
+Active work uses Colab local SSD for model shards, datasets, logs, and Trainer
+state, with periodic checkpoints and final artifacts copied to mounted Drive.
+This is faster and keeps model tensors outside Git. SFT, reward, and DPO
+support exact Trainer resume. DPO's \texttt{auto} mode restores model,
+optimizer, scheduler, RNG, and Trainer state. The experimental PPO API used in
+this project does not expose trustworthy exact resume; a continuation is a
+new segment with an explicit parent, the original SFT reference, and separately
+recorded optimizer history.
+
+Evaluation is resumable per policy. Its ``partial policy outputs'' are complete
+JSONL rows written incrementally; \emph{partial} describes interrupt-safe run
+completion, not shortened prompts or responses. A fingerprint prevents cached
+rows from being reused when checkpoint or generation settings change.
+
+TRL PPO APIs are experimental, and the repository intentionally validates the
+installed stack instead of assuming that an unpinned upgrade is compatible.
+Every dependency change requires a smoke run and a recorded environment before
+an expensive experiment.
+
+\section{Curation Workflow and Publication Standard}
+
+The audit scans every full Base/SFT/PPO response for length, cap and EOS status,
+empty text, learned-reward margins, repeated word-level 4-grams, and a small
+sensitive-term lexicon. It writes candidate tables for low-repetition wins,
+strong regressions, repetition risk, and high-reward mismatch risk. Neither the
+repetition statistic nor lexical scan is a semantic or safety classifier.
+
+\begin{table}[H]
+\centering
+\small
+\caption{Curation artifacts retained by the final workflow.}
+\begin{tabularx}{\textwidth}{@{}p{0.42\textwidth}Y@{}}
+\toprule
+\textbf{Artifact} & \textbf{Purpose}\\
+\midrule
+\texttt{policy\_suite\_samples.jsonl} / CSV & Full prompts, responses, and
+quantitative diagnostics.\\
+\texttt{qualitative\_audit\_auto.md} & Generated aggregate audit and candidate
+summary.\\
+\texttt{curation\_qualified\_ppo\_candidates.csv} & Low-repetition PPO wins over
+both comparison policies.\\
+\texttt{curation\_strong\_ppo\_losses.csv} & Large learned-reward regressions.\\
+\texttt{curation\_ppo\_repetition\_risks.csv} & Responses above the repeated
+4-gram threshold.\\
+\texttt{curation\_reward\_model\_mismatches.csv} & High reward combined with
+repetition or stopping warnings.\\
+\texttt{ckpt100\_judged\_examples.csv} & Deterministic labels for all 2,017
+rows.\\
+\texttt{ckpt100\_deep\_curation\_pools.json} & Candidate pools used for manual
+selection.\\
+\texttt{portfolio\_full\_policy\_comparisons\_final\_trl.json} & Redacted full
+response-explorer payload.\\
+\texttt{portfolio\_curated\_100\_manifest\_final\_trl.json} & Balanced public
+first-pass subset.\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+The deterministic labels in Table~\ref{tab:triage} are produced only from
+recorded diagnostics and metadata. They are not manual judgments. Review must
+cover clean wins, modest or near-tie wins, strong losses, repetition, proxy
+mismatches, correctness-sensitive code/STEM failures, and multilingual drift.
+The first public curation contained 50 examples: 8 likely genuine wins, 16
+modest clean wins, 9 reward-model false-positive risks, 9 severe repetition
+failures, 7 strong regressions, and one manual-review edge case. It was later
+expanded to the balanced 100-example subset described in the main audit, while
+the complete 2,017-row artifact remained public.
+
+Before calling an example an improvement, a reviewer must check instruction
+following, correctness, completeness, relevance, repetition, safety, and
+whether the reward advantage reflects substance rather than length or format.
+Code should be executed when possible; technical claims and citations require
+independent verification. Publication must show both gains and failures. The
+defensible conclusion is that PPO narrowly leads under its learned judge while
+being longer, more capped, and more repetitive---not that PPO universally
+improves the model.
+
 \section{Reproducibility and Artifact Map}
 
 \small
@@ -1172,18 +1590,16 @@ controlling stopping, and validating preferences independently.
 \endhead
 Project overview &
 \path{README.md}. Current project overview and final headline metrics.\\
-Experiment history &
-\path{docs/rlhf_experiments.md}. Chronological record from short-context
-debugging through the final \trl{} run.\\
-\trl{} migration &
-\path{docs/trl_migration.md}. Trainer ownership, N+ implementation-detail
-coverage, and Colab/checkpoint contract.\\
-Qualitative audit &
-\path{docs/rlhf_qualitative_audit.md}. Interpretation of repetition, stopping,
-reward mismatch, and candidate pools.\\
-Future work &
-\path{docs/rlhf_future_work.md}. Detailed research agenda derived from observed
-failures.\\
+Academic report &
+\path{docs/rlhf_project_report.tex} and PDF. Concise scientific account of the
+method, final results, interpretation, and controlled DPO extension.\\
+Technical record &
+\path{docs/rlhf_technical_companion.tex} and PDF. Chronological experiments,
+trainer migration, implementation details, Colab/checkpoint contract, audit,
+artifact governance, and complete research agenda.\\
+Colab reference &
+\path{docs/rlhf_colab_training.ipynb}. Historical executed notebook retained as
+an operational record; the active DPO driver is under \path{notebooks/}.\\
 Prepared data &
 \path{rlhf_runs_lightweight_export/.../data/preparation_report.json}. Filtered
 counts, truncation counts, and sequence-length distributions.\\
@@ -1224,8 +1640,15 @@ python -m scripts.rlhf_evaluate_policy_suite \
   --config configs/trl/qwen25_05b_helpsteer3_eval_suite.yaml
 python -m scripts.rlhf_trl_prepare_data \
   --config configs/trl/qwen25_05b_helpsteer3_dpo.yaml
+python -m scripts.rlhf_trl_doctor \
+  --config configs/trl/qwen25_05b_helpsteer3_dpo.yaml --stage dpo
 python -m scripts.rlhf_trl_train_dpo \
   --config configs/trl/qwen25_05b_helpsteer3_dpo.yaml
+python -m scripts.rlhf_audit_policy_suite \
+  --eval-dir rlhf_runs/checkpoints_ckpt100_full \
+  --base-label base --sft-label sft_trl \
+  --ppo-label ppo_exact_ckpt100
+python -m scripts.rlhf_sync_runs --mode lightweight
 \end{verbatim}
 
 The executed Colab notebook is the source of truth when a directory name or
