@@ -263,11 +263,13 @@ This run is the first one in the project where PPO edges the base model under th
 
 Older custom-training results are preserved in the technical companion and in the machine-readable records under [`experiments/baselines/qwen25_05b_helpsteer3_ppo_long512/`](experiments/baselines/qwen25_05b_helpsteer3_ppo_long512/). Those runs were essential for debugging long context, evaluation caps, checkpoint loading, and repetition diagnostics, but the final result reported here is the TRL run above.
 
+The complete pre-cleanup implementation, including all custom training entry points, is frozen at Git commit `6233219d2ee34517bc4203e0bb986f7cb27bf5d1`. The current source tree intentionally keeps the TRL training path and the repository-owned policy-suite evaluation/audit infrastructure.
+
 ## Repository Structure
 
 | Path | Purpose |
 |---|---|
-| `src/rlhf/` | data preparation, TRL wrappers, reward/evaluation utilities, and legacy custom components |
+| `src/rlhf/` | shared data/configuration utilities, TRL trainers, and policy-suite evaluation support |
 | `scripts/` | command-line training, evaluation, audit, and comparison entry points |
 | `configs/trl/` | active TRL SFT, reward-model, PPO, DPO, and evaluation configs |
 | `configs/rlhf/` | historical custom-loop configs |

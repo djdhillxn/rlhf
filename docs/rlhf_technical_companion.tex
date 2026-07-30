@@ -440,6 +440,17 @@ The custom implementation remains frozen at Git commit:
 This preserves the learning history and provides a baseline for inspecting how
 trainer mechanics changed.
 
+The complete repository immediately before the later legacy-script pruning is
+frozen at Git commit:
+\begin{center}
+{\small\texttt{6233219d2ee34517bc4203e0bb986f7cb27bf5d1}}
+\end{center}
+That snapshot retains every custom training entry point and historical helper.
+The streamlined repository keeps only the active TRL SFT, reward, PPO, and DPO
+path plus the shared evaluation, audit, tracking, and synchronization closure.
+This second revision boundary makes removed educational code recoverable
+without carrying it in the current working surface.
+
 \subsection{Direct preference optimization extension}
 
 The next controlled experiment uses Direct Preference Optimization (DPO)
@@ -1547,9 +1558,9 @@ repetition or stopping warnings.\\
 rows.\\
 \texttt{ckpt100\_deep\_curation\_pools.json} & Candidate pools used for manual
 selection.\\
-\texttt{portfolio\_full\_policy\_comparisons\_final\_trl.json} & Redacted full
+\path{portfolio_full_policy_comparisons_final_trl.json} & Redacted full
 response-explorer payload.\\
-\texttt{portfolio\_curated\_100\_manifest\_final\_trl.json} & Balanced public
+\path{portfolio_curated_100_manifest_final_trl.json} & Balanced public
 first-pass subset.\\
 \bottomrule
 \end{tabularx}

@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 import argparse
 
-from _bootstrap import ensure_repo_root_on_path
+try:
+    from scripts._bootstrap import ensure_repo_root_on_path
+except ModuleNotFoundError:
+    from _bootstrap import ensure_repo_root_on_path
 
 
 def main():
