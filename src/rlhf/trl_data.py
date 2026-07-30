@@ -122,11 +122,33 @@ def _metadata(
     strength,
     fit,
 ):
+    annotator_scores = []
+    for vote in example.get("individual_preference") or []:
+        if not isinstance(vote, dict):
+            continue
+        try:
+            annotator_scores.append(float(vote.get("score")))
+        except (TypeError, ValueError):
+            continue
+    raw_score = _first_present(example, PREFERENCE_SCORE_KEYS)
+    try:
+        direction = 1 if float(raw_score) > 0 else -1
+    except (TypeError, ValueError):
+        direction = 0
+    directional_votes = [score for score in annotator_scores if score != 0]
+    agreeing_votes = sum(
+        1 for score in directional_votes if (1 if score > 0 else -1) == direction
+    )
     return {
         "example_id": _example_id(messages, chosen, rejected),
         "domain": str(example.get("domain", "unknown")),
         "language": str(example.get("language", "unknown")),
         "preference_strength": float(strength),
+        "annotator_scores": annotator_scores,
+        "annotator_count": len(annotator_scores),
+        "annotator_direction_agreement": (
+            agreeing_votes / len(directional_votes) if directional_votes else None
+        ),
         **fit,
     }
 
@@ -222,6 +244,86 @@ def build_reward_records(
     return records, stats
 
 
+def _decode_ids(tokenizer, token_ids):
+    return tokenizer.decode(
+        token_ids,
+        skip_special_tokens=False,
+        clean_up_tokenization_spaces=False,
+    )
+
+
+def build_dpo_records(
+    raw_dataset,
+    tokenizer,
+    *,
+    max_length,
+    max_samples=None,
+    preference_strength_weighting="none",
+):
+    """Build explicit prompt/chosen/rejected records without cutting completions.
+
+    Standard DPO uses one row per non-tied pair. ``linear_replication`` is an
+    optional sensitivity experiment that materializes strength 1/2/3 pairs
+    one/two/three times. HelpSteer3 strengths are ordinal, so this option is
+    intentionally not the default and is never applied to validation data.
+    """
+    mode = str(preference_strength_weighting).strip().lower()
+    if mode not in {"none", "linear_replication"}:
+        raise ValueError(
+            "data.preference_strength_weighting must be 'none' or "
+            "'linear_replication'"
+        )
+
+    records = []
+    stats = Counter()
+    for raw in raw_dataset:
+        example = dict(raw)
+        parsed = _preference_components(example)
+        if parsed is None:
+            stats["invalid_or_tied"] += 1
+            continue
+        messages, chosen, rejected, strength = parsed
+        chosen_completion = _encode_completion(tokenizer, chosen)
+        rejected_completion = _encode_completion(tokenizer, rejected)
+        max_response = max(len(chosen_completion), len(rejected_completion))
+        if max_response >= max_length:
+            stats["response_too_long"] += 1
+            continue
+        prompt_ids, fit = fit_prompt_to_budget(
+            tokenizer, messages, max_length - max_response
+        )
+        if not prompt_ids:
+            stats["no_prompt_budget"] += 1
+            continue
+
+        metadata = _metadata(example, messages, chosen, rejected, strength, fit)
+        base_record = {
+            "prompt": _decode_ids(tokenizer, prompt_ids),
+            "chosen": _decode_ids(tokenizer, chosen_completion),
+            "rejected": _decode_ids(tokenizer, rejected_completion),
+            "prompt_length": len(prompt_ids),
+            "chosen_response_length": len(chosen_completion),
+            "rejected_response_length": len(rejected_completion),
+            "chosen_length": len(prompt_ids) + len(chosen_completion),
+            "rejected_length": len(prompt_ids) + len(rejected_completion),
+            **metadata,
+        }
+        repetitions = int(strength) if mode == "linear_replication" else 1
+        for replica_index in range(repetitions):
+            record = dict(base_record)
+            record["replica_index"] = replica_index
+            records.append(record)
+
+        stats["source_pairs"] += 1
+        stats["kept"] += repetitions
+        stats[f"preference_strength_{int(strength)}"] += 1
+        stats["prompt_truncated"] += int(fit["prompt_truncated"])
+        stats["token_fallback"] += int(fit["token_fallback"])
+        if max_samples is not None and stats["source_pairs"] >= int(max_samples):
+            break
+    return records, stats
+
+
 def build_ppo_records(
     raw_dataset,
     tokenizer,
@@ -306,17 +408,28 @@ def prepare_helpsteer3_for_trl(cfg, tokenizer):
 
     cache_root = Path(cfg.get("cache_dir", "outputs/trl/data/helpsteer3"))
     cache_root.mkdir(parents=True, exist_ok=True)
-    report = {
-        "schema_version": 1,
-        "cache_dir": str(cache_root),
-        "max_total_length": int(cfg.get("max_total_length", 4096)),
-        "max_prompt_length": int(cfg.get("max_prompt_length", 3072)),
-        "splits": {},
-    }
+    report_path = cache_root / "preparation_report.json"
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        report = {}
+    report.update(
+        {
+            "schema_version": 2,
+            "cache_dir": str(cache_root),
+            "max_total_length": int(cfg.get("max_total_length", 4096)),
+            "max_prompt_length": int(cfg.get("max_prompt_length", 3072)),
+        }
+    )
+    report.setdefault("splits", {})
+    stages = [str(stage) for stage in cfg.get("stages", ["sft", "reward", "ppo"])]
+    invalid_stages = sorted(set(stages) - {"sft", "reward", "ppo", "dpo"})
+    if invalid_stages:
+        raise ValueError(f"Unsupported TRL data stages: {invalid_stages}")
     for split in cfg.get("splits", ["train", "validation"]):
         max_samples = cfg.get(f"max_{split}_samples")
-        split_report = {}
-        for stage in ("sft", "reward", "ppo"):
+        split_report = dict(report["splits"].get(str(split), {}))
+        for stage in stages:
             stage_raw = load_helpsteer3_preference(str(split))
             if stage == "sft":
                 records, stats = build_sft_records(
@@ -332,12 +445,25 @@ def prepare_helpsteer3_for_trl(cfg, tokenizer):
                     max_length=int(cfg.get("max_total_length", 4096)),
                     max_samples=max_samples,
                 )
-            else:
+            elif stage == "ppo":
                 records, stats = build_ppo_records(
                     stage_raw,
                     tokenizer,
                     max_prompt_length=int(cfg.get("max_prompt_length", 3072)),
                     max_samples=max_samples,
+                )
+            else:
+                weighting = (
+                    cfg.get("preference_strength_weighting", "none")
+                    if str(split) == str(cfg.get("train_split", "train"))
+                    else "none"
+                )
+                records, stats = build_dpo_records(
+                    stage_raw,
+                    tokenizer,
+                    max_length=int(cfg.get("max_total_length", 4096)),
+                    max_samples=max_samples,
+                    preference_strength_weighting=weighting,
                 )
             path = stage_dataset_path(cache_root, stage, str(split))
             if path.exists():
@@ -351,6 +477,6 @@ def prepare_helpsteer3_for_trl(cfg, tokenizer):
                 "lengths": _length_summary(records),
             }
         report["splits"][str(split)] = split_report
-    write_json(report, cache_root / "preparation_report.json")
+    write_json(report, report_path)
     tokenizer.save_pretrained(cache_root / "tokenizer")
     return report

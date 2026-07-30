@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 import argparse
 
-from _bootstrap import ensure_repo_root_on_path
+try:
+    from scripts._bootstrap import ensure_repo_root_on_path
+except ModuleNotFoundError:
+    from _bootstrap import ensure_repo_root_on_path
 
 
 def main():
@@ -19,8 +22,11 @@ def main():
     from rlhf.trl_data import prepare_helpsteer3_for_trl
 
     cfg = load_config_with_overrides(args.config, args.set)
+    tokenizer_source = cfg.model.get("sft_model_path", cfg.model.get("name"))
+    if not tokenizer_source:
+        raise ValueError("Config must define model.name or model.sft_model_path.")
     tokenizer = load_tokenizer(
-        str(cfg.model.name),
+        str(tokenizer_source),
         trust_remote_code=bool(cfg.model.get("trust_remote_code", False)),
         padding_side="right",
     )

@@ -139,6 +139,33 @@ def maybe_sync_tree(source, destination):
     shutil.copytree(source, destination, dirs_exist_ok=True)
 
 
+def latest_trainer_checkpoint(output_dir):
+    output_dir = Path(output_dir)
+    candidates = []
+    for path in output_dir.glob("checkpoint-*"):
+        if not path.is_dir():
+            continue
+        try:
+            step = int(path.name.rsplit("-", 1)[-1])
+        except ValueError:
+            continue
+        if (path / "trainer_state.json").is_file():
+            candidates.append((step, path))
+    return max(candidates, default=(None, None))[1]
+
+
+def resolve_resume_checkpoint(output_dir, configured):
+    """Resolve an explicit Trainer checkpoint or the newest local checkpoint."""
+    if configured in {None, "", False, "none", "null"}:
+        return None
+    if str(configured).strip().lower() == "auto":
+        return latest_trainer_checkpoint(output_dir)
+    checkpoint = Path(str(configured)).expanduser()
+    if not checkpoint.is_dir():
+        raise FileNotFoundError(f"Trainer checkpoint does not exist: {checkpoint}")
+    return checkpoint
+
+
 def common_training_kwargs(cfg):
     """Translate the shared YAML training fields into Transformers arguments."""
     kwargs = {

@@ -8,7 +8,10 @@ import sys
 from importlib import metadata
 from pathlib import Path
 
-from _bootstrap import ensure_repo_root_on_path
+try:
+    from scripts._bootstrap import ensure_repo_root_on_path
+except ModuleNotFoundError:
+    from _bootstrap import ensure_repo_root_on_path
 
 
 REQUIRED_PACKAGES = (
@@ -56,12 +59,28 @@ def _check_imports(errors):
 
 def _check_trl_apis(errors):
     try:
-        from trl import RewardConfig, RewardTrainer, SFTConfig, SFTTrainer
+        from trl import (
+            DPOConfig,
+            DPOTrainer,
+            RewardConfig,
+            RewardTrainer,
+            SFTConfig,
+            SFTTrainer,
+        )
         from trl.experimental.ppo import PPOConfig, PPOTrainer
     except Exception as exc:
         errors.append(f"TRL trainer API check failed: {type(exc).__name__}: {exc}")
         return
-    names = [SFTConfig, SFTTrainer, RewardConfig, RewardTrainer, PPOConfig, PPOTrainer]
+    names = [
+        SFTConfig,
+        SFTTrainer,
+        RewardConfig,
+        RewardTrainer,
+        DPOConfig,
+        DPOTrainer,
+        PPOConfig,
+        PPOTrainer,
+    ]
     print("TRL trainer APIs:", ", ".join(item.__name__ for item in names))
 
 
@@ -110,7 +129,7 @@ def _check_data(cfg, stage, errors):
 def _tokenizer_source(cfg, stage):
     if stage == "sft":
         return str(cfg.model.name)
-    if stage == "reward":
+    if stage in {"reward", "dpo"}:
         return str(cfg.model.sft_model_path)
     return str(cfg.model.policy_model_path)
 
@@ -153,7 +172,9 @@ def main():
         description="Validate a TRL/Colab runtime before starting an RLHF stage."
     )
     parser.add_argument("--config", required=True)
-    parser.add_argument("--stage", choices=("sft", "reward", "ppo"), required=True)
+    parser.add_argument(
+        "--stage", choices=("sft", "reward", "dpo", "ppo"), required=True
+    )
     parser.add_argument("--set", action="append", default=[], metavar="KEY=VALUE")
     parser.add_argument("--allow-cpu", action="store_true")
     args = parser.parse_args()
