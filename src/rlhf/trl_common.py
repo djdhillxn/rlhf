@@ -136,7 +136,27 @@ def maybe_sync_tree(source, destination):
     if not source.exists():
         return
     destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(source, destination, dirs_exist_ok=True)
+    for path in source.rglob("*"):
+        if not path.is_file():
+            continue
+        target = destination / path.relative_to(source)
+        try:
+            source_stat = path.stat()
+            target_stat = target.stat()
+            current = (
+                target.is_file()
+                and source_stat.st_size == target_stat.st_size
+                and target_stat.st_mtime_ns >= source_stat.st_mtime_ns
+            )
+        except OSError:
+            current = False
+        if current:
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(f".{target.name}.rlhf-sync.tmp")
+        temporary.unlink(missing_ok=True)
+        shutil.copy2(path, temporary)
+        temporary.replace(target)
 
 
 def latest_trainer_checkpoint(output_dir):

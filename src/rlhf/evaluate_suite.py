@@ -1047,6 +1047,7 @@ def run_policy_suite_eval(
         max_samples=_resolve_num_prompts(cfg.eval.get("num_prompts", 200)),
         seed=int(cfg.eval.get("seed", 839)),
         shuffle=bool(cfg.eval.get("shuffle", True)),
+        stratify_by_domain=bool(cfg.eval.get("stratify_by_domain", False)),
     )
     prompts = [r["prompt"] for r in records]
     specs = _policy_specs(cfg)

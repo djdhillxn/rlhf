@@ -39,22 +39,31 @@ def _group_accuracy(rows, key):
 def _calibration(rows, bins=10):
     grouped = defaultdict(list)
     for row in rows:
-        confidence = float(row["preference_probability"])
-        index = min(bins - 1, max(0, int(confidence * bins)))
+        preference_probability = float(row["preference_probability"])
+        confidence = max(preference_probability, 1.0 - preference_probability)
+        width = 0.5 / bins
+        index = min(
+            bins - 1,
+            max(0, int((confidence - 0.5) / width)),
+        )
         grouped[index].append(row)
     output = []
     for index in range(bins):
         values = grouped.get(index, [])
         if not values:
             continue
+        confidences = [
+            max(
+                float(row["preference_probability"]),
+                1.0 - float(row["preference_probability"]),
+            )
+            for row in values
+        ]
         output.append(
             {
-                "bin_lower": index / bins,
-                "bin_upper": (index + 1) / bins,
-                "mean_predicted_probability": sum(
-                    float(row["preference_probability"]) for row in values
-                )
-                / len(values),
+                "bin_lower": 0.5 + index * width,
+                "bin_upper": 0.5 + (index + 1) * width,
+                "mean_confidence": sum(confidences) / len(confidences),
                 "empirical_accuracy": sum(bool(row["correct"]) for row in values)
                 / len(values),
                 "count": len(values),
@@ -119,6 +128,11 @@ def _audit_reward_model(
             }
         )
     calibration = _calibration(rows)
+    calibration_error = sum(
+        bin_row["count"]
+        * abs(bin_row["mean_confidence"] - bin_row["empirical_accuracy"])
+        for bin_row in calibration
+    ) / max(len(rows), 1)
     _write_csv(rows, output_dir / "reward_validation_predictions.csv")
     _write_csv(calibration, output_dir / "reward_calibration.csv")
     return {
@@ -129,6 +143,7 @@ def _audit_reward_model(
         "by_domain": _group_accuracy(rows, "domain"),
         "by_language": _group_accuracy(rows, "language"),
         "by_preference_strength": _group_accuracy(rows, "preference_strength"),
+        "expected_calibration_error": calibration_error,
         "calibration": calibration,
     }
 

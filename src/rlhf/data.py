@@ -155,6 +155,7 @@ def build_prompt_records(
     max_samples=None,
     seed=0,
     shuffle=True,
+    stratify_by_domain=False,
 ):
     records = []
     for ex in raw_dataset:
@@ -169,10 +170,30 @@ def build_prompt_records(
                     "language": str(dict(ex).get("language", "unknown")),
                 }
             )
-    if shuffle:
+    if stratify_by_domain and max_samples is not None:
+        grouped = {}
+        for record in records:
+            grouped.setdefault(record["domain"].lower(), []).append(record)
+        domains = ("code", "general", "stem", "multilingual")
+        missing = [domain for domain in domains if not grouped.get(domain)]
+        if missing:
+            raise ValueError(
+                "Cannot stratify evaluation; missing domains: " + ", ".join(missing)
+            )
+        per_domain = int(max_samples) // len(domains)
+        remainder = int(max_samples) % len(domains)
+        selected = []
+        for domain_index, domain in enumerate(domains):
+            values = list(grouped[domain])
+            random.Random(f"{int(seed)}:eval:{domain}").shuffle(values)
+            quota = per_domain + int(domain_index < remainder)
+            selected.extend(values[:quota])
+        records = selected
+        random.Random(f"{int(seed)}:eval:combined").shuffle(records)
+    elif shuffle:
         rng = random.Random(seed)
         rng.shuffle(records)
-    if max_samples is not None:
+    if max_samples is not None and not stratify_by_domain:
         records = records[: int(max_samples)]
     return records
 

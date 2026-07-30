@@ -30,6 +30,8 @@ python3 -m pip install -e .
 
 The completed PPO workflow is in
 [`notebooks/rlhf_trl_colab_pipeline.ipynb`](notebooks/rlhf_trl_colab_pipeline.ipynb).
+The next guarded, exactly resumable PPO experiment is controlled by
+[`notebooks/rlhf_ppo_guarded_colab_pipeline.ipynb`](notebooks/rlhf_ppo_guarded_colab_pipeline.ipynb).
 The restartable DPO workflow is in
 [`notebooks/rlhf_dpo_colab_pipeline.ipynb`](notebooks/rlhf_dpo_colab_pipeline.ipynb).
 The executed final-run notebook and lightweight exported artifacts are stored
@@ -58,7 +60,10 @@ python -m scripts.rlhf_evaluate_policy_suite \
   --config configs/trl/qwen25_05b_helpsteer3_eval_suite.yaml
 ```
 
-Every command accepts repeated `--set dotted.path=value` overrides. The final Colab run used overrides for Google Drive/local-SSD paths and PPO hyperparameters; the important behavioral settings are summarized below and preserved in the executed notebook.
+Every command accepts repeated `--set dotted.path=value` overrides. The reported
+final run below is preserved in the executed notebook. The active PPO config now
+defines the guarded follow-up experiment; it does not retroactively change those
+reported results.
 
 ## Final TRL Run
 
@@ -148,7 +153,8 @@ This reward model is useful, but it is not a human judge. Its scalar output is a
 
 PPO starts from the merged SFT policy, keeps a frozen SFT reference, scores sampled responses with the reward model, and uses a reward-model-initialized value model. The final run followed the highest-impact N+ implementation details: zero dropout, behavior log-probabilities matched to generation temperature, fixed-length generation with EOS handling, an invalid reward for missing EOS, Adam epsilon `1e-5`, reward whitening, an RM-initialized critic, and KL anchoring to the SFT reference.
 
-The executed Colab overrides are the source of truth for the final PPO settings:
+The executed Colab overrides are the source of truth for this historical final
+PPO run:
 
 | Setting / metric | Value |
 |---|---:|
@@ -171,6 +177,19 @@ The executed Colab overrides are the source of truth for the final PPO settings:
 | Average reward-model score during PPO | -0.5898 |
 
 The run was intentionally stopped and evaluated after 100 optimizer steps because it had become stable enough to inspect, and longer continuation would have increased cost without guaranteeing better qualitative behavior. Continuing this same training segment with multi-metric checkpoint selection is future work, not part of the final reported result.
+
+The guarded follow-up addresses the failure modes exposed by that audit without
+changing TRL's PPO objective. It calibrates terminal reward bounds from a
+domain-stratified sample of reward-training pairs, replaces missing-EOS scores
+with the learned lower boundary, applies a smooth penalty only beyond the
+preferred-response repetition distribution, and draws 16 rollout prompts from
+each HelpSteer3 domain in every batch of 64. Reward whitening is disabled,
+advantage whitening remains inside TRL, the KL coefficient is 0.10, and rollout
+length remains 768 tokens. Exact checkpoints preserve policy, critic, optimizer,
+scheduler, Trainer state, RNG, and deterministic data position every 25 updates.
+Checkpoint gates use 256 balanced prompts, with full 2,017-prompt evaluations at
+updates 100, 150, and 188; checkpoint selection is multi-metric and is not
+automatically assigned to the last update.
 
 ### DPO Extension
 

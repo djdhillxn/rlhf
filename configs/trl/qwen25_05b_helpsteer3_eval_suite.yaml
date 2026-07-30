@@ -54,6 +54,7 @@ eval:
   device: cuda
   num_prompts: all
   shuffle: false
+  stratify_by_domain: false
   batch_size: 16
   load_mode: sequential
   resume: true
