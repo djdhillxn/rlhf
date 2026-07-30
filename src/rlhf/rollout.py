@@ -1,29 +1,41 @@
 import torch
+from dataclasses import dataclass
 
 from .lm_policy import response_label_mask_from_lengths, shifted_token_logprobs
 from .ppo_lm import LMRolloutBatch
 
 
+# class GenerationConfig:
+#     def __init__(
+#         self,
+#         max_prompt_length=512,
+#         max_new_tokens=128,
+#         min_new_tokens=0,
+#         temperature=0.7,
+#         top_p=0.9,
+#         do_sample=True,
+#         repetition_penalty=1.0,
+#         no_repeat_ngram_size=0,
+#     ):
+#         self.max_prompt_length = max_prompt_length
+#         self.max_new_tokens = max_new_tokens
+#         self.min_new_tokens = min_new_tokens
+#         self.temperature = temperature
+#         self.top_p = top_p
+#         self.do_sample = do_sample
+#         self.repetition_penalty = repetition_penalty
+#         self.no_repeat_ngram_size = no_repeat_ngram_size
+
+@dataclass
 class GenerationConfig:
-    def __init__(
-        self,
-        max_prompt_length=512,
-        max_new_tokens=128,
-        min_new_tokens=0,
-        temperature=0.7,
-        top_p=0.9,
-        do_sample=True,
-        repetition_penalty=1.0,
-        no_repeat_ngram_size=0,
-    ):
-        self.max_prompt_length = max_prompt_length
-        self.max_new_tokens = max_new_tokens
-        self.min_new_tokens = min_new_tokens
-        self.temperature = temperature
-        self.top_p = top_p
-        self.do_sample = do_sample
-        self.repetition_penalty = repetition_penalty
-        self.no_repeat_ngram_size = no_repeat_ngram_size
+    max_prompt_length: int = 512
+    max_new_tokens: int = 128
+    min_new_tokens: int = 0
+    temperature: float = 0.7
+    top_p: float = 0.9
+    do_sample: bool = True
+    repetition_penalty: float = 1.0
+    no_repeat_ngram_size: int = 0
 
 
 def _ensure_pad_token(tokenizer):
