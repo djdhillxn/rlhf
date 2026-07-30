@@ -113,14 +113,25 @@ canonical form, the procedure has three stages: supervised fine-tuning on
 preferred demonstrations, training a reward model on chosen/rejected pairs,
 and policy optimization with a KL constraint to a reference policy.
 
-This project asks a deliberately modest but technically demanding question:
-can the complete procedure be made measurable and inspectable on a
-half-billion-parameter instruction model? The small policy makes iteration
-possible on rented notebook hardware, but it also makes the experiment a
-stress test of data quality, reward reliability, implementation detail, and
-evaluation discipline. The base model, \model{}, is already instruction-tuned
-and belongs to the Qwen2.5 family \cite{qwen25}. The work is therefore
-preference post-training rather than instruction tuning from an unaligned base.
+% This project asks a deliberately modest but technically demanding question:
+% can the complete procedure be made measurable and inspectable on a
+% half-billion-parameter instruction model? The small policy makes iteration
+% possible on rented notebook hardware, but it also makes the experiment a
+% stress test of data quality, reward reliability, implementation detail, and
+% evaluation discipline. The base model, \model{}, is already instruction-tuned
+% and belongs to the Qwen2.5 family \cite{qwen25}. The work is therefore
+% preference post-training rather than instruction tuning from an unaligned base.
+
+This project deliberately pairs a modest compute budget with a nontrivial
+preference distribution. It asks whether the complete procedure can be made
+measurable and inspectable on a half-billion-parameter instruction model while
+retaining HelpSteer3's general, code, STEM, multilingual, and long-form
+examples. The small policy makes iteration possible on rented notebook
+hardware, but it also makes the experiment a stress test of data quality,
+reward reliability, implementation detail, and evaluation discipline. The
+base model, \model{}, is already instruction-tuned and belongs to the Qwen2.5
+family \cite{qwen25}. The work is therefore preference post-training rather
+than instruction tuning from an unaligned base.
 
 The project also connects two settings that are often discussed separately.
 Earlier work in the same codebase implemented Trust Region Policy Optimization

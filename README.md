@@ -1,8 +1,12 @@
-# RLHF Post-Training with Qwen2.5, HelpSteer3, TRL PPO, and DPO
+# RLHF Post-Training of Qwen2.5-0.5B with HelpSteer3 through SFT, Reward Modeling, and PPO
 
-This project adapts the trust-region idea behind PPO from classical reinforcement learning to language-model post-training. It grew out of my earlier [TRPO, NPG, and PPO](https://github.com/djdhillxn/trpo) work on MuJoCo and Atari, then asks the same question in an RLHF setting:
+<!-- This project adapts the trust-region idea behind PPO from classical reinforcement learning to language-model post-training. It grew out of my earlier [TRPO, NPG, and PPO](https://github.com/djdhillxn/trpo) work on MuJoCo and Atari, then asks the same question in an RLHF setting: -->
 
-> Can a small instruction model be supervised, judged, and PPO-aligned in a way that is measurable, reproducible, and honest about failure modes?
+<!-- Can a small intruction model be supervised, judged, and PPO-aligned in a way that is measurable, reproducible, and honest about failure modes? -->
+
+> Can a complete RLHF pipeline remain measurable and inspectable when the policy and compute budget are small, but the preference task is broad and often long-form?
+
+The tension is not deliberate, it arose from my compute availabilities, but also my curiosity. Qwen2.5-0.5B-Instruct keeps the experiment feasible on rented notebook hardware, while HelpSteer3 supplies 40,476 preference records across general, code, STEM, and multilingual tasks, including code, multi-step explanations, long conversations, and multilingual responses. A length diagnostic showed that a 1,024-token total training budget would truncate 38.47% of SFT examples and 40.82% of reward-model pairs; the final 4,096-token budget reduced those rates to 0.83% and 1.00%. Sequence handling and reward reliability are therefore part of the research problem, not background implementation details.
 
 The completed pipeline uses **Qwen2.5-0.5B-Instruct**, **NVIDIA HelpSteer3**, **Hugging Face TRL**, and LoRA adapters for three training stages plus a final evaluation stage:
 

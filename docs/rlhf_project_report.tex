@@ -34,7 +34,10 @@
 \newcolumntype{Y}{>{\raggedright\arraybackslash}X}
 
 \title{\vspace{-1.5cm}\textbf{Preference Post-Training Qwen2.5-0.5B}\\
-\large Supervised Fine-Tuning, Reward Modeling, PPO, and Auditable Evaluation}
+% is this a comment; 
+% \large Supervised Fine-Tuning, Reward Modeling, PPO, and Auditable Evaluation
+\large Supervised Fine-Tuning, Reward Modeling, and PPO on diverse data from HelpSteer3 
+% \large Auditable RLHF on Heterogeneous, Long-Form Preference Data}
 \author{Dheeraj Dhillon}
 \date{July 2026}
 
@@ -42,14 +45,24 @@
 \maketitle
 
 \begin{abstract}
-This work studies a complete reinforcement learning from human feedback
-(RLHF) pipeline on \model{} with NVIDIA's \dataset{}. Although the starting
-model is already instruction-tuned, one epoch of response-only supervised
-fine-tuning (SFT) is used as domain and preference adaptation and as the common
-reference policy for later alignment. A two-epoch scalar reward model and a
-KL-regularized Proximal Policy Optimization (PPO) policy are then trained with
-long-context, EOS-safe preprocessing and implementation details drawn from the
-N+ RLHF reproduction.
+% This work studies a complete reinforcement learning from human feedback (RLHF) pipeline on \model{}
+% NVIDIA's \dataset{}. Although the starting model is already instruction-tuned, one epoch of response-only
+% supervised fine-tuning (SFT) is used as domain and preference adaptation and as the common reference
+% policy for later alignment. A two-epoch scalar reward and a KL-regularized Proximal Policy Optimization
+% (PPO) policy are then trained with long-context, EOS-safe preprocessing and implementation details drawn
+% from the N+ RLHF reproduction.
+
+This work asks whether a complete reinforcement learning from human feedback
+(RLHF) pipeline can remain measurable and inspectable on a model with roughly
+half a billion parameters under notebook-scale compute without reducing the
+preference task to short or single-domain outputs. Experiments use \model{}
+and NVIDIA's heterogeneous \dataset{}. Although the starting model is already
+instruction-tuned, one epoch of response-only supervised fine-tuning (SFT)
+provides domain and preference adaptation and a common reference policy. A sequence-length
+diagnostic motivates a 4,096-token training budget, after which a two-epoch
+scalar reward model and a KL-regularized Proximal Policy Optimization (PPO)
+policy are trained with EOS-safe preprocessing and implementation details
+drawn from the N+ RLHF reproduction.
 
 SFT reaches 72.02\% teacher-forced completion-token accuracy on 1,917 retained
 validation pairs. The reward model ranks the human-preferred response correctly
@@ -71,11 +84,19 @@ pipeline first adapts a policy to preferred demonstrations, learns a scalar
 reward from response comparisons, and then optimizes the policy under a
 constraint to its supervised reference \cite{stiennon2020,ouyang2022}.
 
-This project asks whether that pipeline can be implemented, measured, and
-audited on a half-billion-parameter model using rented notebook compute. The
-small model makes iteration accessible, but it also exposes capacity limits
-and makes reward-model error consequential. The Qwen2.5 model family is
-described in \cite{qwen25}. The work began with custom
+% This project asks whether that pipeline can be implemented, measured, and
+% audited on a half-billion-parameter model using rented notebook compute. The
+% small model makes iteration accessible, but it also exposes capacity limits
+% and makes reward-model error consequential. The Qwen2.5 model family is
+% described in \cite{qwen25}. The work began with custom
+
+This project deliberately pairs a modest compute budget with a nontrivial data
+distribution. It asks whether that pipeline can be implemented, measured, and
+audited on a half-billion-parameter model using rented notebook compute while
+retaining general, code, STEM, and multilingual preference tasks with a long
+tail of sequence lengths. The small model makes iteration accessible, but it
+also exposes capacity limits and makes reward-model error consequential. The
+Qwen2.5 model family is described in \cite{qwen25}. The work began with custom
 SFT, reward-model, and token-level PPO loops, then migrated the trainer
 mechanics to Hugging Face \trl{} while retaining repository-owned data
 contracts, model initialization, checkpoint records, evaluation, and
@@ -340,6 +361,11 @@ modeling, online PPO, checkpoint-safe execution, full-set generation, and
 transparent audit on a diverse preference dataset. PPO changes behavior and
 produces useful local gains, but the same run demonstrates how a numerically
 stable policy can exploit a limited scalar judge.
+
+The dataset breadth contextualizes, but does not excuse, the mixed outcome:
+the learned-reward advantage is concentrated in general prompts, while PPO
+does not beat Base on code, STEM, or multilingual subsets. The domain split is
+therefore part of the result rather than noise hidden by one aggregate score.
 
 The central limitations are:
 \begin{enumerate}

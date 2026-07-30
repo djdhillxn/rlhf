@@ -4,6 +4,11 @@ __pycache__/
 *.egg-info/
 .venv/
 .DS_Store
+.aux
+.fls
+.fdb_latexmk
+.synctex.gz
+.toc
 
 # Local paper library and downloaded archives are intentionally private.
 research/
