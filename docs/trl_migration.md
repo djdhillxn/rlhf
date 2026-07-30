@@ -3,7 +3,8 @@
 ## Purpose
 
 The active training path uses Hugging Face TRL for supervised fine-tuning,
-reward modeling, and PPO. The previous custom implementation is
+reward modeling, PPO, and the controlled DPO extension. The previous custom
+implementation is
 preserved as a frozen historical baseline at Git commit
 `6cbf214fcf1b91c7b756e303e533c2c86d2eba89`.
 
@@ -17,7 +18,7 @@ estimation.
 
 ## Stage architecture
 
-The data-preparation command builds three tokenized datasets from the same
+The data-preparation command builds four stage-specific datasets from the same
 filtered HelpSteer3 rows:
 
 - SFT records contain `input_ids` and a `completion_mask`, so loss is computed
@@ -25,6 +26,8 @@ filtered HelpSteer3 rows:
 - Reward records contain paired `chosen_ids` and `rejected_ids` with a shared
   prompt prefix.
 - PPO records contain deduplicated, left-padded prompt token IDs.
+- DPO records contain explicit prompt, chosen, and rejected text, with complete
+  EOS-terminated responses and preference-strength/annotator metadata.
 
 Responses are never truncated to make room for a prompt. The preprocessor
 first removes the oldest non-system turns, then left-truncates prompt tokens
@@ -47,6 +50,12 @@ PPO starts a fresh policy LoRA adapter from the merged SFT policy. The frozen
 reference is the same SFT model with the adapter disabled. Separate reward and
 value models are both initialized from the trained reward model, so the critic
 does not begin as an unrelated random value head.
+
+DPO starts from the same merged SFT policy and uses that policy as its fixed
+reference. The primary run applies one standard sigmoid-DPO example per
+non-tied pair. HelpSteer3 preference levels are ordinal, so their magnitudes
+are preserved for stratified analysis rather than silently treated as linear
+sample weights.
 
 ## Implementation-detail coverage
 
@@ -74,26 +83,40 @@ required.
 ## Commands
 
 ```bash
-python scripts/rlhf_trl_prepare_data.py \
+python -m scripts.rlhf_trl_prepare_data \
   --config configs/trl/qwen25_05b_helpsteer3_sft.yaml
 
-python scripts/rlhf_trl_train_sft.py \
+python -m scripts.rlhf_trl_train_sft \
   --config configs/trl/qwen25_05b_helpsteer3_sft.yaml
 
-python scripts/rlhf_trl_train_reward_model.py \
+python -m scripts.rlhf_trl_train_reward_model \
   --config configs/trl/qwen25_05b_helpsteer3_reward.yaml
 
-python scripts/rlhf_trl_train_ppo.py \
+python -m scripts.rlhf_trl_train_ppo \
   --config configs/trl/qwen25_05b_helpsteer3_ppo.yaml
 
-python scripts/rlhf_evaluate_policy_suite.py \
+python -m scripts.rlhf_evaluate_policy_suite \
   --config configs/trl/qwen25_05b_helpsteer3_eval_suite.yaml
 
-python scripts/rlhf_audit_policy_suite.py \
+python -m scripts.rlhf_audit_policy_suite \
   --eval-dir rlhf_runs/checkpoints_ckpt100_full \
   --base-label base \
   --sft-label sft_trl \
   --ppo-label ppo_exact_ckpt100
+```
+
+The DPO path is:
+
+```bash
+python -m scripts.rlhf_trl_prepare_data \
+  --config configs/trl/qwen25_05b_helpsteer3_dpo.yaml
+
+python -m scripts.rlhf_trl_doctor \
+  --config configs/trl/qwen25_05b_helpsteer3_dpo.yaml \
+  --stage dpo
+
+python -m scripts.rlhf_trl_train_dpo \
+  --config configs/trl/qwen25_05b_helpsteer3_dpo.yaml
 ```
 
 Every command accepts repeated `--set dotted.path=value` overrides. Resolved
@@ -134,6 +157,14 @@ also keeps the Git repository small, avoids accidental commits of large model
 files, and makes it easier to download or share the source tree without
 pulling checkpoints. SFT and reward training support exact Transformers
 checkpoint resume through `train.resume_from_checkpoint`.
+
+DPO also supports exact Trainer resume. The DPO notebook restores the newest
+Drive checkpoint into the local output directory, and
+`train.resume_from_checkpoint=auto` resumes model, optimizer, scheduler, RNG,
+and Trainer state. Periodic checkpoints and the final model are copied to the
+same persistent Drive run directory. The lightweight synchronization command
+copies logs, configs, reports, tokenizers, and Trainer state back to the
+MacBook while excluding model tensors and files over the configured size cap.
 
 The current experimental TRL PPO trainer path writes checkpoints, but this
 wrapper does not expose an exact `resume_from_checkpoint` path. It rejects that

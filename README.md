@@ -1,15 +1,19 @@
-# RLHF Post-Training with Qwen2.5, HelpSteer3, and TRL PPO
+# RLHF Post-Training with Qwen2.5, HelpSteer3, TRL PPO, and DPO
 
 This project adapts the trust-region idea behind PPO from classical reinforcement learning to language-model post-training. It grew out of my earlier [TRPO, NPG, and PPO](https://github.com/djdhillxn/trpo) work on MuJoCo and Atari, then asks the same question in an RLHF setting:
 
 > Can a small instruction model be supervised, judged, and PPO-aligned in a way that is measurable, reproducible, and honest about failure modes?
 
-The final pipeline uses **Qwen2.5-0.5B-Instruct**, **NVIDIA HelpSteer3**, **Hugging Face TRL**, and LoRA adapters for three training stages plus a final evaluation stage:
+The completed pipeline uses **Qwen2.5-0.5B-Instruct**, **NVIDIA HelpSteer3**, **Hugging Face TRL**, and LoRA adapters for three training stages plus a final evaluation stage:
 
 1. supervised fine-tuning (SFT) on preferred HelpSteer3 responses;
 2. reward-model training on chosen/rejected preference pairs;
 3. token-level PPO with a frozen SFT reference and a learned reward model;
 4. full policy-suite evaluation of Base, SFT, and PPO responses on the same validation prompts.
+
+A controlled DPO extension is now implemented from the same frozen SFT
+checkpoint. It is intentionally described as the next experiment until its
+training and full-suite evaluation artifacts exist.
 
 The final PPO policy does not make the 0.5B model universally better. It does produce the strongest run from this project: under the learned reward model, PPO wins **50.92%** of pairwise comparisons against the base instruction model and **57.71%** against the SFT policy on the 2,017-prompt evaluation. The same audit also shows a real cost: PPO is longer, hits the generation cap more often, and has the highest repetition rate. The result is therefore a useful RLHF case study rather than a blanket claim of model superiority.
 
@@ -20,26 +24,33 @@ python3 -m pip install -r requirements.txt
 python3 -m pip install -e .
 ```
 
-The Colab orchestration notebook is [`notebooks/rlhf_trl_colab_pipeline.ipynb`](notebooks/rlhf_trl_colab_pipeline.ipynb). The executed final-run notebook and lightweight exported artifacts are stored locally under `rlhf_runs/` and `rlhf_runs_lightweight_export/` for analysis.
+The completed PPO workflow is in
+[`notebooks/rlhf_trl_colab_pipeline.ipynb`](notebooks/rlhf_trl_colab_pipeline.ipynb).
+The restartable DPO workflow is in
+[`notebooks/rlhf_dpo_colab_pipeline.ipynb`](notebooks/rlhf_dpo_colab_pipeline.ipynb).
+The executed final-run notebook and lightweight exported artifacts are stored
+locally under `rlhf_runs/` and `rlhf_runs_lightweight_export/` for analysis.
 
 ## Active Pipeline
 
-The active training path uses Hugging Face TRL for SFT, reward modeling, and PPO. The repository still owns the HelpSteer3 preprocessing, chat formatting, manifests, evaluation suite, repetition diagnostics, and qualitative curation.
+The active training path uses Hugging Face TRL for SFT, reward modeling, PPO,
+and DPO. The repository still owns HelpSteer3 preprocessing, chat formatting,
+manifests, evaluation, repetition diagnostics, and qualitative curation.
 
 ```bash
-python scripts/rlhf_trl_prepare_data.py \
+python -m scripts.rlhf_trl_prepare_data \
   --config configs/trl/qwen25_05b_helpsteer3_sft.yaml
 
-python scripts/rlhf_trl_train_sft.py \
+python -m scripts.rlhf_trl_train_sft \
   --config configs/trl/qwen25_05b_helpsteer3_sft.yaml
 
-python scripts/rlhf_trl_train_reward_model.py \
+python -m scripts.rlhf_trl_train_reward_model \
   --config configs/trl/qwen25_05b_helpsteer3_reward.yaml
 
-python scripts/rlhf_trl_train_ppo.py \
+python -m scripts.rlhf_trl_train_ppo \
   --config configs/trl/qwen25_05b_helpsteer3_ppo.yaml
 
-python scripts/rlhf_evaluate_policy_suite.py \
+python -m scripts.rlhf_evaluate_policy_suite \
   --config configs/trl/qwen25_05b_helpsteer3_eval_suite.yaml
 ```
 
@@ -157,6 +168,29 @@ The executed Colab overrides are the source of truth for the final PPO settings:
 
 The run was intentionally stopped and evaluated after 100 optimizer steps because it had become stable enough to inspect, and longer continuation would have increased cost without guaranteeing better qualitative behavior. Continuing this same training segment with multi-metric checkpoint selection is future work, not part of the final reported result.
 
+### DPO Extension
+
+The DPO experiment changes only the preference-optimization method. It reuses
+the frozen one-epoch SFT policy and the same non-tied HelpSteer3 pairs, tokenizer,
+4096-token preparation budget, LoRA targets, and final evaluation prompts. The
+primary configuration uses standard sigmoid DPO with beta `0.1`, one epoch,
+effective batch size 32, LoRA rank 16, zero dropout, and precomputed reference
+log probabilities:
+
+```bash
+python -m scripts.rlhf_trl_prepare_data \
+  --config configs/trl/qwen25_05b_helpsteer3_dpo.yaml
+
+python -m scripts.rlhf_trl_train_dpo \
+  --config configs/trl/qwen25_05b_helpsteer3_dpo.yaml
+```
+
+HelpSteer3's preference strengths are retained as metadata for stratified
+analysis. The main run does not assume that ordinal levels 1, 2, and 3 are
+linearly spaced utility weights. A separately named `linear_replication`
+sensitivity run is available, but it should not be conflated with the primary
+standard-DPO result.
+
 ## Policy-Suite Evaluation
 
 The final evaluator generates Base, SFT, and PPO responses for the same 2,017 HelpSteer3 validation prompts, scores every prompt-response pair with the same reward model, and derives all pairwise comparisons from that single table.
@@ -235,7 +269,7 @@ Older custom-training results are preserved in [`docs/rlhf_experiments.md`](docs
 |---|---|
 | `src/rlhf/` | data preparation, TRL wrappers, reward/evaluation utilities, and legacy custom components |
 | `scripts/` | command-line training, evaluation, audit, and comparison entry points |
-| `configs/trl/` | active TRL SFT, reward-model, PPO, and evaluation configs |
+| `configs/trl/` | active TRL SFT, reward-model, PPO, DPO, and evaluation configs |
 | `configs/rlhf/` | historical custom-loop configs |
 | `docs/` | experiment history, TRL migration notes, audit notes, and future work |
 | `experiments/baselines/` | frozen pre-TRL baseline records |
@@ -244,9 +278,8 @@ Older custom-training results are preserved in [`docs/rlhf_experiments.md`](docs
 
 ## Recommended Reading Order
 
-1. [`docs/trl_migration.md`](docs/trl_migration.md): active TRL design, N+ implementation coverage, and final run settings.
-2. [`docs/rlhf_experiments.md`](docs/rlhf_experiments.md): chronological experiment log from short-context debugging through the final TRL run.
-3. [`docs/rlhf_qualitative_audit.md`](docs/rlhf_qualitative_audit.md): evidence for clean wins, strong losses, repetition, and reward-model mismatch.
-4. [`docs/rlhf_curation_guide.md`](docs/rlhf_curation_guide.md): how to reproduce curation and export portfolio examples.
-5. [`docs/rlhf_future_work.md`](docs/rlhf_future_work.md): the research program that follows from the final limitations.
-6. [`docs/experiment_tracking.md`](docs/experiment_tracking.md): run manifests, exact configs, and reproducibility contract.
+1. [`docs/latex/rlhf_project_report.pdf`](docs/latex/rlhf_project_report.pdf): concise two-column academic report.
+2. [`docs/latex/rlhf_technical_companion.pdf`](docs/latex/rlhf_technical_companion.pdf): engineering detail, experiment history, artifact map, and DPO execution record.
+3. [`docs/trl_migration.md`](docs/trl_migration.md): active TRL design and implementation-detail coverage.
+4. [`docs/rlhf_experiments.md`](docs/rlhf_experiments.md): chronological experiment log.
+5. [`docs/rlhf_qualitative_audit.md`](docs/rlhf_qualitative_audit.md): repetition and reward-model mismatch audit.
