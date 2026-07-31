@@ -33,109 +33,99 @@
 \newcommand{\trl}{\textsc{TRL}}
 \newcolumntype{Y}{>{\raggedright\arraybackslash}X}
 
-\title{\vspace{-1.5cm}\textbf{Preference Post-Training Qwen2.5-0.5B}\\
-% is this a comment; 
-% \large Supervised Fine-Tuning, Reward Modeling, PPO, and Auditable Evaluation
-\large Supervised Fine-Tuning, Reward Modeling, and PPO on diverse data from HelpSteer3 
-% \large Auditable RLHF on Heterogeneous, Long-Form Preference Data}
-\author{Dheeraj Dhillon}
-\date{July 2026}
-
 \begin{document}
-\maketitle
 
+\twocolumn[
+\begin{@twocolumnfalse}
+\begin{center}
+{\LARGE\bfseries Preference Post-Training Qwen2.5-0.5B\par}
+\vspace{0.25em}
+{\large Supervised Fine-Tuning, Reward Modeling, and Guarded PPO on Diverse, Long-Form HelpSteer3 Data\par}
+\vspace{0.45em}
+{\normalsize Dheeraj Dhillon\par}
+{\small July 2026\par}
+\end{center}
+\vspace{-0.4em}
 \begin{abstract}
-% This work studies a complete reinforcement learning from human feedback (RLHF) pipeline on \model{}
-% NVIDIA's \dataset{}. Although the starting model is already instruction-tuned, one epoch of response-only
-% supervised fine-tuning (SFT) is used as domain and preference adaptation and as the common reference
-% policy for later alignment. A two-epoch scalar reward and a KL-regularized Proximal Policy Optimization
-% (PPO) policy are then trained with long-context, EOS-safe preprocessing and implementation details drawn
-% from the N+ RLHF reproduction.
-
 This work asks whether a complete reinforcement learning from human feedback
-(RLHF) pipeline can remain measurable and inspectable on a model with roughly
-half a billion parameters under notebook-scale compute without reducing the
-preference task to short or single-domain outputs. Experiments use \model{}
-and NVIDIA's heterogeneous \dataset{}. Although the starting model is already
-instruction-tuned, one epoch of response-only supervised fine-tuning (SFT)
-provides domain and preference adaptation and a common reference policy. A sequence-length
-diagnostic motivates a 4,096-token training budget, after which a two-epoch
-scalar reward model and a KL-regularized Proximal Policy Optimization (PPO)
-policy are trained with EOS-safe preprocessing and implementation details
-drawn from the N+ RLHF reproduction.
+(RLHF) pipeline can remain measurable and inspectable under notebook-scale
+compute without reducing preference learning to short or single-domain
+outputs. Experiments use \model{} and NVIDIA's heterogeneous \dataset{}.
+A sequence-length audit motivates a 4,096-token budget for supervised
+fine-tuning (SFT) and reward modeling, reducing observed truncation from about
+40\% to about 1\%. One epoch of response-only LoRA SFT supplies a common policy
+and reference; a two-epoch Bradley--Terry reward model then reaches 65.62\%
+held-out pairwise accuracy.
 
-SFT reaches 72.02\% teacher-forced completion-token accuracy on 1,917 retained
-validation pairs. The reward model ranks the human-preferred response correctly
-in 65.62\% of those pairs. On a separate generation suite covering all 2,017
-validation prompts, the learned reward model prefers PPO over the original
-instruction model in 1,027 cases, prefers Base in 981, and assigns 9 ties
-(50.92\% PPO win rate). This narrow proxy-judge gain is accompanied by
-substantially greater length, cap hits, and repetition. The result is therefore
-presented as an inspectable alignment case study, not as evidence that PPO
-universally improves the base model. Complete outputs and a balanced curated
-subset are published for direct review.
+The final policy is trained with guarded, KL-regularized PPO for 12,032
+on-policy rollouts and 188 optimizer updates. The run combines domain-balanced
+sampling, quantile-calibrated reward clipping, EOS-aware terminal scoring,
+smooth repeated-4-gram shaping, exact resume, and memory-efficient response-only
+log-probability computation for 768-token generations. On all 2,017 validation
+prompts, PPO remains numerically stable and avoids empty-output collapse, but
+the learned reward model prefers it over Base in 817 of 2,017 comparisons
+(40.51\%) and over SFT in 974 (48.29\%). PPO nevertheless remains close to the
+baselines in length and stopping behavior: its median response is 355 tokens,
+its cap-hit rate is 16.31\%, and 16.16\% of responses cross a 25\% repeated
+4-gram threshold. The result is therefore presented as an end-to-end systems,
+stability, and evaluation study---not as evidence that PPO universally improves
+the base instruction model. Complete generations and audit metadata are made
+available for direct inspection.
 \end{abstract}
+\vspace{0.8em}
+\end{@twocolumnfalse}
+]
 
 \section{Introduction}
 
-RLHF attempts to connect next-token language modeling with human judgments of
-helpfulness, relevance, correctness, clarity, and safety. Its canonical
-pipeline first adapts a policy to preferred demonstrations, learns a scalar
-reward from response comparisons, and then optimizes the policy under a
-constraint to its supervised reference \cite{stiennon2020,ouyang2022}.
+RLHF connects next-token language modeling with human judgments of helpfulness,
+relevance, correctness, clarity, and safety. A canonical pipeline first adapts
+a policy to preferred demonstrations, learns a scalar reward from response
+comparisons, and then optimizes the policy while constraining drift from a
+supervised reference \cite{stiennon2020,ouyang2022}.
 
-% This project asks whether that pipeline can be implemented, measured, and
-% audited on a half-billion-parameter model using rented notebook compute. The
-% small model makes iteration accessible, but it also exposes capacity limits
-% and makes reward-model error consequential. The Qwen2.5 model family is
-% described in \cite{qwen25}. The work began with custom
+This project deliberately pairs a modest policy and compute budget with a
+nontrivial preference distribution. \dataset{} includes general, code, STEM,
+and multilingual tasks, long conversational contexts, executable snippets,
+and multi-step explanations. The small model makes iteration feasible, but it
+also makes sequence truncation, reward-model error, stopping behavior, and
+value estimation consequential. The Qwen2.5 family is described in
+\cite{qwen25}.
 
-This project deliberately pairs a modest compute budget with a nontrivial data
-distribution. It asks whether that pipeline can be implemented, measured, and
-audited on a half-billion-parameter model using rented notebook compute while
-retaining general, code, STEM, and multilingual preference tasks with a long
-tail of sequence lengths. The small model makes iteration accessible, but it
-also exposes capacity limits and makes reward-model error consequential. The
-Qwen2.5 model family is described in \cite{qwen25}. The work began with custom
-SFT, reward-model, and token-level PPO loops, then migrated the trainer
-mechanics to Hugging Face \trl{} while retaining repository-owned data
-contracts, model initialization, checkpoint records, evaluation, and
-qualitative audit.
+The work began with custom SFT, reward-model, and token-level PPO loops, then
+migrated trainer mechanics to Hugging Face \trl{} while retaining repository-
+owned preprocessing, model initialization, exact-resume state, reward
+calibration, evaluation, and qualitative auditing. The central contribution is
+not a state-of-the-art aligned model. It is an inspectable pipeline in which
+training behavior and failure analysis are treated as equally important
+outputs.
 
 \paragraph{Why SFT an instruction model?}
-The starting checkpoint is already instruction-tuned, so this stage is not
-instruction tuning from scratch. It is continued SFT on the preferred
-\dataset{} responses. This is justified for two reasons: it adapts the
-response distribution to the exact preference data used downstream, and it
-creates a reproducible reference policy shared by reward modeling, PPO, and
-the planned DPO comparison. Using the original instruction checkpoint directly
-would remove this controlled reference and make downstream differences harder
-to attribute. Continued supervised adaptation before preference optimization
-is also consistent with modern post-training pipelines \cite{ouyang2022}.
-
-The principal contribution is not a state-of-the-art model. It is an
-end-to-end study in which training and failure analysis receive equal weight:
-full responses, reward scores, length, EOS behavior, cap hits, repeated
-4-grams, deterministic triage, and curated examples remain available for
-inspection.
+The starting checkpoint is already instruction-tuned. Continued SFT is used as
+domain and preference adaptation, not instruction tuning from scratch. It
+moves the policy toward the preferred HelpSteer3 response distribution and
+creates a reproducible checkpoint shared by reward modeling, the PPO policy,
+and the frozen PPO reference. This controlled initialization makes downstream
+changes easier to attribute.
 
 \section{Method}
 
-\subsection{Data and preprocessing}
+\subsection{Data and sequence handling}
 
 \dataset{} contains 40,476 pairwise records over general, code, STEM, and
 multilingual tasks \cite{wang2025}. Each record contains one conversational
 context, two candidate responses, an overall preference in
-$\{-3,\ldots,3\}$, and up to three individual annotator judgments. Negative
-overall values favor response 1, positive values favor response 2, and zero is
-a tie.
+$\{-3,\ldots,3\}$, and up to three annotator judgments. Tied or invalid pairs
+are excluded, leaving 36,264 training and 1,917 reward-model validation pairs.
+The generation suite retains all 2,017 validation prompts.
 
-Tied or invalid pairs are excluded from preference training, leaving 36,264
-training and 1,917 validation records. All stages use the Qwen chat template
-and distinct PAD and EOS tokens. Completions are preserved through EOS; when a
-sequence exceeds 4,096 tokens, old prompt turns are removed before a final
-prompt-side token fallback. This reduces observed SFT training truncation from
-38.47\% at a 1,024-token budget to 0.83\% at 4,096.
+All stages use the Qwen chat template and distinct PAD and EOS tokens.
+Completions are preserved through EOS; when an example exceeds 4,096 tokens,
+old prompt turns are removed before a final prompt-side token fallback. At a
+1,024-token budget, 38.47\% of SFT examples and 40.82\% of reward-model pairs
+would truncate. At 4,096 tokens, the observed rates fall to 0.83\% and 1.00\%.
+Sequence handling is therefore part of the experiment rather than a cosmetic
+configuration choice.
 
 \subsection{Supervised fine-tuning}
 
@@ -147,9 +137,10 @@ $m_t$, response-only SFT minimizes
 \label{eq:sft}
 \end{equation}
 Prompt and padding tokens do not contribute to the loss. LoRA
-\cite{hu2022} rank-16 adapters are trained in all attention and feed-forward
-projections; the backbone remains frozen. The merged result supplies both the
-initial policy and the fixed reference for preference optimization.
+\cite{hu2022} rank-16 adapters are trained in attention and feed-forward
+projections while the backbone remains frozen. The merged model supplies the
+SFT comparison policy and the common initialization/reference for later
+stages.
 
 \subsection{Reward modeling}
 
@@ -161,20 +152,19 @@ Bradley--Terry loss
 =-\log\sigma\!\left(r_\phi(x,y^+)-r_\phi(x,y^-)\right).
 \label{eq:rm}
 \end{equation}
-Only score differences are identifiable; the sign of one isolated reward is
-not a quality boundary. A fixed offset estimated on preferred demonstrations
-is therefore subtracted consistently during PPO and evaluation.
+Only score differences are identifiable; the sign of one isolated score is
+not a universal quality boundary. A persisted offset estimated on preferred
+demonstrations is subtracted consistently during PPO and evaluation.
 
-\subsection{KL-regularized PPO}
+\subsection{Guarded KL-regularized PPO}
 
 PPO \cite{schulman2017} receives a terminal reward-model score and token-level
-shaping against the
-frozen SFT policy:
+KL shaping against the frozen SFT policy:
 \begin{align}
 r_t^{\mathrm{KL}}
 &=-\beta\left[\log\pi_\theta(y_t\mid s_t)
 -\log\pi_{\mathrm{ref}}(y_t\mid s_t)\right],\\
-R(x,y)&=r_\phi(x,y)+\sum_t r_t^{\mathrm{KL}} .
+R(x,y)&=\widetilde r_\phi(x,y)+\sum_t r_t^{\mathrm{KL}}.
 \end{align}
 With generalized advantages $\hat A_t$ and
 $\rho_t=\pi_\theta(y_t\mid s_t)/\pi_{\mathrm{old}}(y_t\mid s_t)$, the policy
@@ -187,13 +177,38 @@ loss is
 \right].
 \label{eq:ppo}
 \end{equation}
-The final path follows high-impact N+ implementation details
-\cite{huang2024}: zero policy dropout, behavior log probabilities matched to
-sampling temperature, a frozen SFT reference, an SFT-initialized reward model,
-controlled scalar-head initialization, reward centering, an RM-initialized
-critic, masked reward/advantage whitening, Adam $\epsilon=10^{-5}$, and
-fixed-length sampling followed by EOS truncation. Responses without EOS
-receive reward $-1$.
+
+The final path follows high-impact implementation details from the N+ RLHF/PPO
+reproduction \cite{huang2024}: zero policy dropout, behavior probabilities
+matched to sampling temperature, a frozen SFT reference, an SFT-initialized
+reward model, controlled scalar-head initialization, an RM-initialized critic,
+masked advantage whitening, Adam $\epsilon=10^{-5}$, and fixed-length sampling
+followed by EOS truncation.
+
+The guarded run adds controls motivated by earlier failures. Reward bounds are
+calibrated from 4,096 domain-stratified reward-training pairs. Raw terminal
+scores are clipped to the 0.5th and 99.5th percentiles,
+$[-2.7507,1.5018]$; a missing EOS receives the same lower-bound score. A smooth
+penalty is applied only when repeated token 4-gram mass exceeds the 95th
+percentile of preferred responses (0.3084). Reward whitening is disabled so
+these calibrated penalties retain their scale, while TRL's masked advantage
+whitening remains active. Every batch of 64 contains exactly 16 prompts from
+each domain, preventing general prompts from dominating the on-policy data.
+
+\subsection{Memory-efficient long-response execution}
+
+Long-form PPO exposed systems costs that are absent from short demonstrations.
+The stock rollout path retained full-vocabulary generation scores, implying a
+$64\times768\times151{,}665$ tensor, or about 27.77~GiB in float32, before the
+optimizer update. The final path generates token IDs with a rollout-only KV
+cache and no generation-score history, then recomputes behavior
+log-probabilities in chunks from response-position logits only. It removes
+prompt columns masked for every row in each chunk, shares the policy backbone
+with the reference by disabling the LoRA adapter, and backpropagates policy and
+value losses through separate graphs before one accumulated optimizer step.
+These transformations preserve rewards, GAE, clipping, effective batch size,
+and sampled trajectories while reducing peak allocated memory to 37.64~GiB on
+the completed run.
 
 \begin{table*}[t]
 \centering
@@ -201,7 +216,7 @@ receive reward $-1$.
 \caption{Final training profile. ``Token accuracy'' is teacher-forced
 next-token accuracy over preferred completion tokens, not task accuracy.}
 \label{tab:training}
-\begin{tabularx}{0.96\textwidth}{@{}lYYYY@{}}
+\begin{tabularx}{0.97\textwidth}{@{}lYYYY@{}}
 \toprule
 \textbf{Stage} & \textbf{Data and budget} & \textbf{Adaptation} &
 \textbf{Optimization} & \textbf{Outcome}\\
@@ -209,64 +224,54 @@ next-token accuracy over preferred completion tokens, not task accuracy.}
 SFT &
 36,264 train; 1,917 val.; 4,096 total tokens &
 LoRA $r=16$, $\alpha=32$, dropout 0 &
-1 epoch; effective batch 32; LR $5{\times}10^{-6}$; cosine, 3\% warmup &
+1 epoch; effective batch 32; LR $5{\times}10^{-6}$ &
 Train loss 1.0556; val.\ loss 1.1127; token accuracy 72.02\%\\
 Reward model &
 36,264 pairs; 1,917 val.\ pairs; 4,096 tokens &
 SFT backbone; scalar head; LoRA $r=32$, $\alpha=64$ &
-2 epochs; effective batch 64; LR $5{\times}10^{-6}$; centering coefficient
-0.01 &
+2 epochs; effective batch 64; LR $5{\times}10^{-6}$; centering 0.01 &
 Val.\ loss 0.6166; pairwise accuracy 65.62\%; mean margin 0.3578\\
-PPO &
-24,018 unique prompts; 768-token rollouts &
+Guarded PPO &
+12,032 rollouts; 12,007 unique prompts; 768-token responses &
 SFT policy/reference; RM-initialized value model &
-64 episodes/update; 4 PPO epochs; LR $3{\times}10^{-6}$; KL coefficient 0.07 &
-6,400 episodes; 100 updates; objective KL 2.1648 at final update\\
+188 updates; 64 rollouts/update; 4 PPO epochs; LR $3{\times}10^{-6}$;
+$\beta=0.10$ &
+Final objective KL 0.7305; update KL 0.000537; EOS 82.81\%; no empty collapse\\
 \bottomrule
 \end{tabularx}
 \end{table*}
 
 \section{Training Results}
 
-\subsection{SFT assessment}
+\subsection{SFT and reward model}
 
 The one-epoch SFT run is stable. Validation loss changes only from 1.1183 at
 step 250 to 1.1127 at step 1,134, while completion-token accuracy remains near
-72\%. There is no late validation reversal suggesting material overfitting.
-The sequence budget retains nearly all responses, and the effective batch,
-learning rate, LoRA coverage, precision, and zero-dropout setting are
-conservative for continued adaptation of a 0.5B model.
-
-These metrics do not prove better open-ended responses, but they establish the
-purpose required here: a stable HelpSteer-adapted policy and common reference.
-Accordingly, this checkpoint is frozen for subsequent experiments rather than
-rerun merely to obtain a lower training loss.
-
-\subsection{Reward model}
+72\%. These metrics do not prove better open-ended responses; they establish a
+stable HelpSteer-adapted policy and common reference.
 
 The two-epoch reward model reaches 65.62\% overall pairwise accuracy. Accuracy
 increases with preference strength: 61.23\%, 66.33\%, and 71.10\% for strengths
 1, 2, and 3. Domain accuracy is uneven: 70.23\% on code, 62.91\% on general,
-59.26\% on STEM, and 71.82\% on multilingual examples. This is usable as a
-noisy preference signal, but not sufficiently reliable to serve as ground
-truth, especially for correctness-sensitive STEM outputs.
-
-An earlier custom reward model obtained 71.62\% validation accuracy yet
-participated in a worse downstream PPO run. This is not evidence that lower
-accuracy is desirable; it shows that aggregate in-distribution rank accuracy
-does not capture reward scale, critic initialization, EOS handling, policy
-optimization, or behavior on policy-generated text.
+59.26\% on STEM, and 71.82\% on multilingual examples. It is therefore usable
+as a noisy preference signal, but not reliable enough to serve as ground truth,
+especially for correctness-sensitive STEM outputs.
 
 \subsection{PPO dynamics}
 
-The selected PPO run was configured for 12,000 episodes and stopped for full
-evaluation after 6,400 episodes and 100 optimizer updates. Average
-response-level objective KL was 1.8278 and the final value was 2.1648.
-This statistic aggregates over a response and is not directly comparable to
-per-token KL targets. Old-to-new update KL remained much smaller
-(mean 0.000640), the mean clip fraction was 0.00557, value loss fell from
-25.32 to 5.50, and no empty-response collapse occurred. Optimization was
-numerically stable, but stability alone did not prevent reward exploitation.
+The guarded run completed its configured budget: 12,032 rollouts and 188
+updates. The final response-level objective KL to the frozen SFT reference is
+0.7305, or 0.00199 per response token. The old-to-new optimizer update remains
+much smaller: approximate KL is 0.000537 and clip fraction is 0.00571 at update
+188. Final value loss is 0.1076, down from the large early values produced while
+the critic adapted to the terminal reward scale. The final rollout batch has
+82.81\% EOS completion, 17.19\% cap hits, mean response length 366.8 tokens,
+and no empty responses.
+
+Across the run, later batches are shorter, more likely to terminate, and easier
+for the critic to predict than early batches. This is evidence that the guarded
+training mechanics worked. It is not evidence that the learned reward objective
+became an independent measure of human quality.
 
 \section{Evaluation}
 
@@ -274,27 +279,30 @@ numerically stable, but stability alone did not prevent reward exploitation.
 
 Base, SFT, and PPO each generate one response for all 2,017 validation prompts
 using the same tokenizer, prompt formatting, 3,072-token prompt limit,
-1,024-token response cap, temperature 0.7, and top-$p=1$. The same epoch-two
-reward model scores all prompt-response pairs. Pairwise tables derive from one
-shared response table, preventing comparisons from using different samples.
-Because the PPO training judge is also the evaluator, learned reward is treated
-as a diagnostic rather than independent human preference.
+768-token response cap, temperature 0.7, and top-$p=1$. The same epoch-two
+reward model scores all prompt-response pairs. Generation is sequential and
+resumable at the policy-output level; all pairwise comparisons derive from one
+shared response table. Because the PPO training judge is also the evaluator,
+learned reward is treated as a diagnostic rather than independent human
+preference.
 
 \begin{table*}[t]
 \centering
-\small
-\caption{Full policy-suite evaluation on 2,017 prompts.}
+\scriptsize
+\caption{Full policy-suite evaluation on 2,017 prompts. Repetition is the
+fraction of responses whose repeated word-level 4-gram mass exceeds 25\%. The
+behavioral diagnostics are placed before reward/win statistics intentionally.}
 \label{tab:evaluation}
-\begin{tabular}{@{}lrrrrrr@{}}
+\begin{tabular}{@{}lrrrrrrrr@{}}
 \toprule
-\textbf{Policy} & \textbf{Three-way wins} & \textbf{Win rate} &
-\textbf{Mean reward} & \textbf{Mean tokens} & \textbf{Median tokens} &
-\textbf{Cap hit}\\
+\textbf{Policy} & \textbf{Mean tok.} & \textbf{Median tok.} &
+\textbf{Cap hit} & \textbf{Rep-4 $>25\%$} & \textbf{Mean reward} &
+\textbf{Three-way wins} & \textbf{Win rate} & \textbf{Empty}\\
 \midrule
-Base & 718 & 35.60\% & 0.0803 & 398.0 & 331 & 8.82\%\\
-SFT & 508 & 25.19\% & 0.0652 & 436.5 & 371 & 13.39\%\\
-PPO & 775 & 38.42\% & 0.7300 & 577.8 & 520 & 27.42\%\\
-Tie & 16 & 0.79\% & -- & -- & -- & --\\
+Base & 373.5 & 333 & 16.21\% & 165 (8.18\%) & 0.2229 & 845 & 41.89\% & 0.00\%\\
+SFT & 392.5 & 364 & 18.34\% & 374 (18.54\%) & 0.2037 & 585 & 29.00\% & 0.00\%\\
+PPO & 384.1 & 355 & 16.31\% & 326 (16.16\%) & 0.1753 & 563 & 27.91\% & 0.00\%\\
+Tie & -- & -- & -- & -- & -- & 24 & 1.19\% & --\\
 \bottomrule
 \end{tabular}
 \end{table*}
@@ -302,123 +310,95 @@ Tie & 16 & 0.79\% & -- & -- & -- & --\\
 \begin{table*}[t]
 \centering
 \small
-\caption{Pairwise learned-reward results and PPO--Base domain breakdown. Win
-rates include ties in the denominator.}
+\caption{Pairwise learned-reward results. Win rates include ties in the
+denominator.}
 \label{tab:pairwise}
 \begin{tabular}{@{}lrrrrr@{}}
 \toprule
 \textbf{Comparison} & \textbf{Left wins} & \textbf{Right wins} &
 \textbf{Ties} & \textbf{Right win rate} & \textbf{Mean right--left delta}\\
 \midrule
-Base vs SFT & 1,158 & 837 & 22 & 41.50\% & $-0.0151$\\
-Base vs PPO & 981 & 1,027 & 9 & 50.92\% & $+0.6497$\\
-SFT vs PPO & 840 & 1,164 & 13 & 57.71\% & $+0.6648$\\
-\midrule
-\textbf{PPO vs Base by domain} & \textbf{Base wins} & \textbf{PPO wins} &
-\textbf{Ties} & \textbf{PPO win rate} & \textbf{Prompts}\\
-Code & 250 & 188 & 0 & 42.92\% & 438\\
-General & 399 & 529 & 3 & 56.82\% & 931\\
-STEM & 126 & 118 & 1 & 48.16\% & 245\\
-Multilingual & 206 & 192 & 5 & 47.64\% & 403\\
+Base vs SFT & 1,145 & 849 & 23 & 42.09\% & $-0.0192$\\
+Base vs PPO & 1,179 & 817 & 21 & 40.51\% & $-0.0476$\\
+SFT vs PPO & 1,018 & 974 & 25 & 48.29\% & $-0.0284$\\
 \bottomrule
 \end{tabular}
 \end{table*}
 
-PPO narrowly crosses 50\% against Base under the learned reward model, with the
-aggregate advantage concentrated in general prompts. It remains below Base on
-code and slightly below on STEM and multilingual prompts. The median
-PPO-minus-Base reward delta is only $+0.0254$, whereas the mean is $+0.6497$;
-a positive tail, including some flawed high-reward responses, raises the mean.
+The learned-reward differences are small in the mean, but the win counts favor
+Base. PPO is closest to SFT and exceeds SFT on the STEM subset, yet it does not
+beat Base in any of the four domains. This is a mixed alignment outcome rather
+than a proxy-judge victory.
 
 \subsection{Stopping, repetition, and qualitative audit}
 
-PPO is substantially longer and more likely to exhaust the generation budget.
-The fraction of responses whose repeated word-level 4-gram mass exceeds 25\%
-is 10.11\% for Base, 20.08\% for SFT, and 31.88\% for PPO. At the stricter 50\%
-threshold, the rates are 3.02\%, 8.48\%, and 15.82\%. Thus, the learned-reward
-gain comes with an observable degradation in stopping and repetition.
+The guarded PPO response distribution is much closer to Base and SFT than the
+earlier, more exploitable PPO checkpoint archived in the technical companion.
+In the final suite, 16.16\% of PPO responses cross the 25\% repeated-4-gram
+threshold and 5.21\% cross 50\%, compared with 8.18\% and 2.13\% for Base and
+18.54\% and 7.09\% for SFT. PPO's 16.31\% cap-hit rate is nearly identical to
+Base's 16.21\% and below SFT's 18.34\%.
 
-Every evaluation row is assigned a deterministic triage label from reward
-margins, EOS/cap status, and repeated 4-grams. The rules identify 8 likely
-genuine PPO wins, 354 modest clean wins, 924 cases needing manual review, 228
-repetition risks, 151 reward-model false-positive risks, 288 severe repetition
-failures, and 64 strong PPO regressions. These labels prioritize review; they
-are neither human judgments nor LLM-as-judge verdicts.
-
-The public artifact contains all 2,017 full prompts and responses, with
-secret-shaped strings redacted. A balanced 100-example subset contains 50
-positive and 50 negative cases across all domains. Inspection finds real local
-gains, such as better multi-part coverage and compact recovery from meandering
-answers, alongside repeated loops, irrelevant continuation, malformed code,
-fabricated citations, and incorrect scientific procedures. Publishing both
-sides prevents the proxy score from becoming the entire account of the model.
+The automated audit produces review queues rather than semantic verdicts: 9
+qualified PPO candidates, 120 strong PPO-loss candidates, 326 repetition-risk
+rows, and 155 high-reward repetition mismatches. These sets overlap and are
+intended to direct manual inspection. Positive cases include clearer structure,
+better coverage of multi-part requests, and more compact answers. Negative
+cases include incorrect code, confused factual reasoning, prompt restatement,
+and occasional extreme loops that still receive high reward. The response
+explorer publishes the full prompt, Base and PPO generations, reward scores,
+token counts, EOS/cap state, and repeated 4-gram diagnostics so that these
+claims can be checked against concrete text.
 
 \section{Discussion}
 
 The strongest supported result is a systems-and-evaluation result. The project
 connects long-context preprocessing, parameter-efficient SFT, pairwise reward
-modeling, online PPO, checkpoint-safe execution, full-set generation, and
-transparent audit on a diverse preference dataset. PPO changes behavior and
-produces useful local gains, but the same run demonstrates how a numerically
-stable policy can exploit a limited scalar judge.
+modeling, guarded online PPO, exact-resume execution, full-set generation, and
+transparent qualitative audit on a diverse preference dataset. The final PPO
+run is numerically healthy and materially less prone to the stopping and
+repetition failures that motivated its guardrails. It does not, however,
+improve aggregate learned-reward preference over the already instruction-tuned
+Base model.
 
-The dataset breadth contextualizes, but does not excuse, the mixed outcome:
-the learned-reward advantage is concentrated in general prompts, while PPO
-does not beat Base on code, STEM, or multilingual subsets. The domain split is
-therefore part of the result rather than noise hidden by one aggregate score.
+This distinction is central. Stable clipping, low update KL, finite value loss,
+and high EOS rate show that the optimizer behaves as intended; they do not
+establish that the scalar objective captures every property a human reviewer
+cares about. Reward calibration and repetition shaping reduce obvious proxy
+exploitation, but they cannot make a 65.62\%-accurate reward model an oracle.
+The project therefore treats reward scores, behavioral diagnostics, and direct
+response inspection as complementary evidence.
 
-The central limitations are:
-\begin{enumerate}
-  \item the reward model is both training signal and final quantitative judge;
-  \item no blinded, multi-rater human preference study is reported;
-  \item one stochastic generation per policy does not measure decoding
-  variance;
-  \item response length confounds reward, completeness, and repetition;
-  \item a 0.5B policy and reward model have limited factual and long-context
-  capacity; and
-  \item the selected PPO checkpoint was practical rather than chosen by an
-  independent human metric.
-\end{enumerate}
+The central limitations are that the same reward model supplies both training
+and quantitative evaluation; no blinded multi-rater human study is reported;
+one sampled generation per policy does not estimate decoding variance; length
+remains entangled with completeness, formatting, and repetition; and a 0.5B
+policy/reward model has limited factual and long-context capacity. The final
+checkpoint completed a predefined 12,000-episode budget rather than being
+selected by an independent human metric. These constraints bound the result,
+but they do not invalidate the completed pipeline or the stability analysis.
 
-\subsection{Controlled DPO extension}
-
-The next experiment replaces reward-model optimization with Direct Preference
-Optimization (DPO) \cite{rafailov2023} while keeping the SFT checkpoint,
-preference records, tokenizer, 4,096-token budget, LoRA targets, and evaluation
-prompts fixed:
-\begin{align}
-\Delta_\theta
-&=\log\frac{\pi_\theta(y^+\mid x)}{\pi_{\mathrm{ref}}(y^+\mid x)}
--\log\frac{\pi_\theta(y^-\mid x)}{\pi_{\mathrm{ref}}(y^-\mid x)},\\
-\mathcal{L}_{\mathrm{DPO}}
-&=-\mathbb{E}\log\sigma\!\left(\beta\Delta_\theta\right).
-\end{align}
-The primary design uses standard sigmoid DPO with $\beta=0.1$, one epoch,
-effective batch 32, LoRA rank 16, zero dropout, and precomputed reference log
-probabilities. Each non-tied pair appears once. HelpSteer3 preference strength
-is retained for stratified evaluation but is not silently interpreted as a
-linear utility weight; an explicit strength-weighted sensitivity run can be
-reported separately. The comparison will test whether direct offline
-preference learning avoids the reward hacking and rollout cost observed under
-PPO at this scale.
-
-Further work should add blinded human review, repeated sampled generations and
-paired confidence intervals, reward-model hard negatives drawn from observed
-PPO failures, stronger correctness checks for code and STEM, and multi-metric
-checkpoint selection. Scaling the policy is justified only after the evaluator
-is less exploitable.
+Future work should prioritize independent evaluation over more PPO updates:
+blinded human or strong-judge comparisons on a stratified subset, paired
+confidence intervals across repeated generations, reward-model hard negatives
+from observed failures, execution-based checks for code, stronger STEM
+correctness tests, and multi-metric checkpoint selection. Scaling the policy is
+most useful after the evaluator is less exploitable.
 
 \section{Conclusion}
 
 One-epoch continued SFT provides a stable HelpSteer-adapted reference, the
-reward model learns a meaningful but imperfect ranking signal, and PPO
-produces the strongest learned-reward result in the project. Yet the same
-evaluation reveals longer, frequently capped, and substantially more
-repetitive responses. The appropriate conclusion is neither that PPO failed
-nor that it solved alignment. The project shows that a small-model RLHF stack
-can be built and investigated rigorously, and that credible reporting requires
-training metrics, full responses, and failure analysis together. DPO now
-provides the cleanest controlled next comparison.
+reward model learns a meaningful but imperfect ranking signal, and the guarded
+PPO run completes 188 updates over 12,032 long-form rollouts without numerical
+or empty-output collapse. Quantile reward bounds, exact-EOS scoring, KL
+regularization, repetition shaping, domain balance, exact resume, and
+response-only memory optimizations make this the most controlled PPO iteration
+in the project. Full evaluation does not show aggregate reward-model
+superiority over Base, but it shows a policy whose stopping and repetition
+behavior remains usable enough for meaningful side-by-side inspection. The
+appropriate conclusion is neither that PPO solved alignment nor that the
+training did nothing: the project demonstrates how to build, stabilize, audit,
+and honestly report an end-to-end RLHF system under constrained compute.
 
 \balance
 \begin{thebibliography}{99}
@@ -465,13 +445,6 @@ Qwen Team.
 \newblock Qwen2.5 Technical Report.
 \newblock arXiv:2412.15115, 2024.
 \newblock \url{https://arxiv.org/abs/2412.15115}.
-
-\bibitem{rafailov2023}
-R. Rafailov, A. Sharma, E. Mitchell, C. D. Manning, S. Ermon, and C. Finn.
-\newblock Direct Preference Optimization: Your Language Model is Secretly a
-Reward Model.
-\newblock \emph{NeurIPS}, 2023.
-\newblock \url{https://arxiv.org/abs/2305.18290}.
 
 \bibitem{trl}
 L. von Werra et al.
